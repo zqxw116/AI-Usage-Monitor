@@ -15,6 +15,7 @@ internal sealed class MonitorForm : Form
     private static readonly Color TimeColor = Color.FromArgb(207, 217, 228);
     private static readonly Color Muted = Color.FromArgb(149, 161, 174);
     private static readonly TimeZoneInfo Korea = TimeZoneInfo.FindSystemTimeZoneById("Korea Standard Time");
+    private readonly Icon applicationIcon = LoadApplicationIcon();
     private readonly Bitmap gptLogo = LoadLogo("GptLogo.png");
     private readonly Bitmap claudeLogo = LoadLogo("ClaudeLogo.png");
     private readonly UsageSource codex;
@@ -46,6 +47,7 @@ internal sealed class MonitorForm : Form
     internal float OrangeHeight => orange.Height(DesignSize);
     internal int SelectedCharacter => selectedCharacter;
     internal bool TrayVisible => trayIcon?.Visible == true;
+    internal bool TrayUsesApplicationIcon => ReferenceEquals(trayIcon?.Icon, applicationIcon);
     internal static Rectangle[] WorkAreas => Screen.AllScreens.Select(screen => screen.WorkingArea).ToArray();
     internal static bool WithinDesktop(Rectangle rectangle) => DisplayLimits.Area(rectangle, WorkAreas).Contains(rectangle);
 
@@ -77,7 +79,8 @@ internal sealed class MonitorForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Background;
         DoubleBuffered = true;
-        ShowInTaskbar = true;
+        ShowInTaskbar = false;
+        Icon = applicationIcon;
         AccessibleName = "Codex와 Claude Code 사용량 모니터";
         codex.Changed += RefreshDisplay;
         claude.Changed += RefreshDisplay;
@@ -182,7 +185,7 @@ internal sealed class MonitorForm : Form
             pin.Checked = TopMost;
             for (int i = 0; i < characters.DropDownItems.Count; i++) ((ToolStripMenuItem)characters.DropDownItems[i]).Checked = selectedCharacter == i;
         };
-        trayIcon = new NotifyIcon { Icon = SystemIcons.Application, Text = "AI 사용량 모니터", ContextMenuStrip = trayMenu, Visible = true };
+        trayIcon = new NotifyIcon { Icon = applicationIcon, Text = "AI 사용량 모니터", ContextMenuStrip = trayMenu, Visible = true };
         trayIcon.DoubleClick += (_, _) => RestoreFromTray();
     }
 
@@ -338,6 +341,13 @@ internal sealed class MonitorForm : Form
         DrawText(g, label, buttonFont, active ? Color.FromArgb(160, 204, 184) : LabelColor, area, true);
     }
 
+    private static Icon LoadApplicationIcon()
+    {
+        using var stream = typeof(MonitorForm).Assembly.GetManifestResourceStream("AppIcon.ico")!;
+        using var icon = new Icon(stream, 32, 32);
+        return (Icon)icon.Clone();
+    }
+
     private static Bitmap LoadLogo(string resource)
     {
         using var stream = typeof(MonitorForm).Assembly.GetManifestResourceStream(resource)!;
@@ -470,7 +480,7 @@ internal sealed class MonitorForm : Form
             trayIcon?.Dispose(); trayMenu?.Dispose(); characterMenu.Dispose();
             foreach (var icon in characterIcons) icon.Dispose();
             codex.Changed -= RefreshDisplay; claude.Changed -= RefreshDisplay;
-            gptLogo.Dispose(); claudeLogo.Dispose();
+            applicationIcon.Dispose(); gptLogo.Dispose(); claudeLogo.Dispose();
             labelFont.Dispose(); valueFont.Dispose(); timeFont.Dispose(); brandFont.Dispose(); buttonFont.Dispose();
         }
         base.Dispose(disposing);

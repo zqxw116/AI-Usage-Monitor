@@ -219,11 +219,12 @@ internal static class Program
         using var form = new MonitorForm(codex, claude, false);
         form.CreateControl();
         // 표시된 창에서만 최상단 네이티브 스타일을 검증하며, 투명하게 표시해 사용자 화면을 가리지 않습니다.
-        form.ShowInTaskbar = false;
+        Assert(!form.ShowInTaskbar, "기본 창이 작업표시줄에 표시되지 않음");
         form.Opacity = 0;
         form.Show();
         Application.DoEvents();
         var window = form.Handle;
+        Assert((GetWindowLong(window, -20) & 0x40000) == 0, "실제 창의 작업표시줄 표시 스타일 비활성화");
         void Capture(string name)
         {
             using var image = new Bitmap(form.ClientSize.Width, form.ClientSize.Height);
@@ -321,10 +322,12 @@ internal static class Program
         form.SelectCharacter(0);
         form.CreateTray();
         Assert(form.TrayVisible, "트레이 아이콘 등록");
+        Assert(form.TrayUsesApplicationIcon && form.Icon?.Width == 32, "사용자 이미지 아이콘을 창과 트레이에 적용");
         form.HideToTray();
         Assert(!form.Visible, "트레이로 창 숨기기");
         form.RestoreFromTray();
         Assert(form.Visible, "트레이에서 창 복원");
+        Assert(!form.ShowInTaskbar && (GetWindowLong(form.Handle, -20) & 0x40000) == 0, "트레이에서 복원해도 작업표시줄에는 표시되지 않음");
         using (var previewSprite = new OrangeWalker())
         {
             var canvas = form.DesignSize;
