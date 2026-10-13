@@ -58,7 +58,13 @@ Codex와 Claude Code의 **5시간·주간 한도에서 남은 사용량과 초�
 
 ## 빌드
 
-Windows에 .NET 9 SDK를 설치한 뒤 저장소 폴더에서 PowerShell로 실행합니다.
+Windows에 .NET 9 SDK를 설치한 뒤 **`빌드.bat`를 더블클릭**하면 됩니다. 명령어를 직접 입력할 필요가 없습니다.
+
+빌드가 끝나면 결과 폴더가 열립니다. 그 안의 **`AI Usage Monitor.exe`**를 실행하세요. SDK가 없거나 빌드가 실패하면 배치 창에 안내가 표시됩니다. 빌드 결과의 EXE가 실행 중이면 종료한 뒤 다시 빌드하세요.
+
+배치파일은 저장소의 `src` 폴더와 기존 개인 작업 폴더의 `소스` 폴더를 모두 지원합니다. 다른 작업 폴더에서 실행해도 배치파일이 있는 위치를 기준으로 빌드합니다.
+
+명령어로 실행하려면 저장소 폴더에서 PowerShell을 열어 다음과 같이 입력합니다.
 
 ```powershell
 dotnet publish ".\src\UsageMonitor.csproj" -c Release -o ".\artifacts\publish" -p:RuntimeFrameworkVersion=9.0.11 -p:NuGetAudit=false
