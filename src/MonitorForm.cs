@@ -309,10 +309,9 @@ internal sealed class MonitorForm : Form
         g.ScaleTransform(ClientSize.Width / (float)size.Width, ClientSize.Height / (float)size.Height);
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
-        using var border = new Pen(Color.FromArgb(80, 93, 107));
-        g.DrawRectangle(border, 0, 0, size.Width - 1, size.Height - 1);
-        if (vertical) g.DrawLine(border, 10, RowHeight, ServiceWidth - 8, RowHeight);
-        else g.DrawLine(border, ServiceWidth, 8, ServiceWidth, RowHeight - 8);
+        using var divider = new Pen(Color.FromArgb(80, 93, 107));
+        if (vertical) g.DrawLine(divider, 10, RowHeight, ServiceWidth - 8, RowHeight);
+        else g.DrawLine(divider, ServiceWidth, 8, ServiceWidth, RowHeight - 8);
         DrawService(g, codex, 0, 0, RemainingColor(100, false), "Codex");
         DrawService(g, claude, vertical ? 0 : ServiceWidth, vertical ? RowHeight : 0, RemainingColor(100, true), "Claude");
         orange.Draw(g, size, orangeTime, orangeDistance);
@@ -323,6 +322,8 @@ internal sealed class MonitorForm : Form
         DrawButton(g, 4, "−", false);
         DrawButton(g, 5, "−", false);
         DrawButton(g, 6, "캐", false);
+        using var border = new Pen(Color.White, 3);
+        g.DrawRectangle(border, 1.5f, 1.5f, size.Width - 3, size.Height - 3);
     }
 
     private RectangleF ButtonBounds(int button)
