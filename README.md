@@ -1,0 +1,100 @@
+# AI Usage Monitor
+
+Codex와 Claude Code의 **5시간·주간 한도에서 남은 사용량과 초기화까지 남은 시간**을 보여주는 작은 Windows 데스크톱 앱입니다. 개인 PC에서 두 서비스의 한도를 한눈에 확인하기 위해 만들었습니다.
+
+## 기능
+
+- 두 서비스의 사용량을 가로 한 줄 또는 서비스별 두 줄로 표시
+- 남은 비율에 따라 사용량 바와 퍼센트의 색상을 다섯 단계로 변경
+- GPT·Claude 로고, 최상단 고정, 비율을 유지하는 창 크기 조절
+- 여러 모니터 사이의 좌우 이동과 화면 경계 제한
+- 트레이로 숨기기, 트레이에서 창 복원·캐릭터 선택·종료
+- 창 테두리를 따라 이동하고 모서리에서 회전하는 캐릭터 애니메이션
+- 오렌지, 비행선, 빨간 자동차, 아기 낙타, 오리, 커피 새 선택 및 크기 조절
+
+| 남은 비율 | Codex | Claude |
+|---|---|---|
+| 80~100% | 청록 | 주황 |
+| 60% 이상, 80% 미만 | 연두 | 금색 |
+| 40% 이상, 60% 미만 | 노랑 | 살구 |
+| 20% 초과, 40% 미만 | 주황 | 분홍 |
+| 0~20% | 빨강 | 빨강 |
+
+## 실행 조건
+
+- Windows 11, x64
+- 사용량을 확인할 서비스의 Codex 또는 Claude Code에 이 PC에서 로그인한 상태
+- 사용량 조회를 위한 인터넷 연결
+
+앱은 로컬 로그인 파일에서 인증 정보를 읽어 각 서비스에 사용량을 조회합니다. 로그인 파일을 수정하거나 인증 정보를 별도 파일에 저장하지 않습니다.
+
+- Codex: `%USERPROFILE%\.codex\auth.json` (`CODEX_HOME` 지정 시 해당 경로 사용)
+- Claude Code: `%USERPROFILE%\.claude\.credentials.json` (`CLAUDE_CONFIG_DIR` 지정 시 해당 경로 사용)
+
+서비스의 한도 정보 제공 방식이나 로그인 파일 형식이 바뀌면 조회 기능을 수정해야 할 수 있습니다. API 과금 내역을 보여주는 앱이 아닙니다.
+
+## 자동 갱신
+
+시작할 때 조회하고, 로컬 세션 파일의 변경을 감지하면 사용량을 다시 확인합니다. 활동 중 조회 간격은 최소 15초이며 활동이 없을 때는 약 60초 간격으로 확인합니다. 서버의 조회 제한이나 연결 실패 시 재시도 간격이 길어질 수 있습니다. 매 요청·응답마다 즉시 갱신되는 방식은 아닙니다.
+
+카운트다운은 매초 다시 그립니다. 초기화 시각을 지났더라도 서버에서 새 한도를 확인하기 전에는 임의로 100%를 표시하지 않습니다. 세부 초기화 날짜와 마지막 조회 시각은 서비스 영역에 마우스를 올리면 한국 시간으로 볼 수 있습니다.
+
+## 조작
+
+| 조작 | 동작 |
+|---|---|
+| 빈 영역 드래그 | 창 이동 |
+| 창 테두리 드래그 | 비율을 유지한 크기 조절 |
+| `핀` | 최상단 고정 켜기·끄기 |
+| `↕` / `↔` | 가로·세로 모드 전환 |
+| `＋` / 그 아래 `−` | 캐릭터 확대·축소 |
+| `캐` | 캐릭터 선택 |
+| `×` 아래 `−` | 트레이로 숨기기 |
+| `×` | 프로그램 종료 |
+| 트레이 아이콘 더블클릭 | 창 복원 |
+| 트레이 아이콘 우클릭 | 관리 메뉴 |
+
+캐릭터 최대 크기는 창의 논리적 높이에 따라 제한됩니다. 빨간 자동차는 차체 중심으로 표시하기 위해 멀리 퍼지는 연기·먼지 일부를 제외합니다.
+
+## 빌드
+
+Windows에 .NET 9 SDK를 설치한 뒤 저장소 폴더에서 PowerShell로 실행합니다.
+
+```powershell
+dotnet publish ".\src\UsageMonitor.csproj" -c Release -o ".\artifacts\publish" -p:RuntimeFrameworkVersion=9.0.11 -p:NuGetAudit=false
+```
+
+결과: `artifacts\publish\AI Usage Monitor.exe`
+
+기본 빌드는 .NET 실행 환경을 포함한 단일 EXE입니다. 대상 PC에 .NET을 따로 설치할 필요가 없는 대신 실행 파일 크기는 약 110MB입니다. 이미지 자산은 약 2MB이며 나머지 대부분은 실행 환경입니다. EXE와 빌드 중간 파일은 Git에 포함하지 않습니다.
+
+실행 환경이 이미 설치된 PC를 위한 작은 빌드는 다음과 같이 만들 수 있습니다. 이 빌드를 실행하려면 .NET 9 **Windows Desktop Runtime x64**가 필요합니다.
+
+```powershell
+dotnet publish ".\src\UsageMonitor.csproj" -c Release -o ".\artifacts\framework-dependent" --self-contained false -p:IncludeNativeLibrariesForSelfExtract=false -p:RuntimeFrameworkVersion=9.0.11 -p:NuGetAudit=false
+```
+
+## 검증
+
+빌드된 앱의 검증 모드는 실제 사용량 조회, 색상 구간, 화면 경계, 창 조작, 트레이, 캐릭터 재생과 회전을 검사하고 보고서 및 화면 이미지를 생성합니다. 현재 포함된 검사는 84개입니다.
+
+```powershell
+& ".\artifacts\publish\AI Usage Monitor.exe" --verify ".\artifacts\verification"
+```
+
+검증은 로그인된 계정의 사용량을 실제로 조회합니다. 보고서·화면 이미지에는 개인 사용량이 담길 수 있으므로 `artifacts` 폴더는 Git에서 제외합니다. 로그인이 없거나 조회할 수 없으면 보고서에서 해당 서비스의 실패 상태를 확인해야 합니다.
+
+## 소스 구성
+
+- `src/MonitorForm.cs`: 창, 사용량 표시, 조작 버튼, 트레이
+- `src/Usage.cs`: 인증 파일 읽기, 사용량 조회, 파싱과 갱신
+- `src/OrangeWalker.cs`: GIF·스프라이트 시트 재생, 캐릭터 이동과 회전
+- `src/DesktopBounds.cs`: 다중 모니터 경계 및 크기 제한
+- `src/Program.cs`: 실행과 검증 모드
+- `src/Assets`: 캐릭터 및 서비스 로고 이미지
+
+## 이미지 출처
+
+GPT 로고는 [OpenAI 공식 정적 자산](https://cdn.oaistatic.com/assets/favicon-l4nq08hd.svg), Claude 로고는 [Claude 공식 사이트 아이콘](https://claude.ai/favicon.ico)을 사용했습니다. 각 서비스의 로고 권리는 해당 권리자에게 있습니다.
+
+원본 캐릭터 이미지는 프로젝트 제작자가 제공한 파일입니다. 오리와 커피 새의 걷기 시트는 제공된 이미지를 바탕으로 생성했습니다. 소스 공개가 이미지의 권리 이전을 의미하지는 않습니다.

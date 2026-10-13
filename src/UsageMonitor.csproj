@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>AI Usage Monitor</AssemblyName>
+    <Version>1.0.0</Version>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\Gpt.png" LogicalName="GptLogo.png" />
+    <EmbeddedResource Include="Assets\Claude.png" LogicalName="ClaudeLogo.png" />
+    <EmbeddedResource Include="Assets\Walking Orange.gif" LogicalName="WalkingOrange.gif" />
+    <EmbeddedResource Include="Assets\Dirigible.gif" LogicalName="Dirigible.gif" />
+    <EmbeddedResource Include="Assets\Red Car.gif" LogicalName="RedCar.gif" />
+    <EmbeddedResource Include="Assets\Baby Camel.gif" LogicalName="BabyCamel.gif" />
+    <EmbeddedResource Include="Assets\Duck.png" LogicalName="Duck.png" />
+    <EmbeddedResource Include="Assets\Coffe Bird.png" LogicalName="CoffeBird.png" />
+    <EmbeddedResource Include="Assets\DuckWalkSheet.png" LogicalName="DuckWalkSheet.png" />
+    <EmbeddedResource Include="Assets\CoffeeWalkSheet.png" LogicalName="CoffeeWalkSheet.png" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,33 @@
+# Build and local verification output
+**/bin/
+**/obj/
+artifacts/
+publish/
+outputs/
+TestResults/
+*.exe
+*.dll
+*.pdb
+*.log
+
+# IDE and operating system files
+.vs/
+.idea/
+*.user
+*.suo
+Thumbs.db
+Desktop.ini
+
+# Authentication, transcripts and private local data
+.codex/
+.claude/
+.cache/
+.env
+.env.*
+!.env.example
+auth.json
+.credentials.json
+credentials.json
+*.jsonl
+검증결과.json
+자동갱신*.json
