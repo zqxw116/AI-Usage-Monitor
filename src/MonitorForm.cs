@@ -315,6 +315,7 @@ internal sealed class MonitorForm : Form
         else g.DrawLine(border, ServiceWidth, 8, ServiceWidth, RowHeight - 8);
         DrawService(g, codex, 0, 0, RemainingColor(100, false), "Codex");
         DrawService(g, claude, vertical ? 0 : ServiceWidth, vertical ? RowHeight : 0, RemainingColor(100, true), "Claude");
+        orange.Draw(g, size, orangeTime, orangeDistance);
         DrawButton(g, 0, "핀", TopMost);
         DrawButton(g, 1, vertical ? "↔" : "↕", vertical);
         DrawButton(g, 2, "＋", false);
@@ -322,7 +323,6 @@ internal sealed class MonitorForm : Form
         DrawButton(g, 4, "−", false);
         DrawButton(g, 5, "−", false);
         DrawButton(g, 6, "캐", false);
-        orange.Draw(g, size, orangeTime, orangeDistance);
     }
 
     private RectangleF ButtonBounds(int button)

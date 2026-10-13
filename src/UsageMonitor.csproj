@@ -16,6 +16,7 @@
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="Assets\AppIcon.ico" LogicalName="AppIcon.ico" />
+    <EmbeddedResource Include="Assets\CatRunSheet.png" LogicalName="CatRunSheet.png" />
     <EmbeddedResource Include="Assets\Gpt.png" LogicalName="GptLogo.png" />
     <EmbeddedResource Include="Assets\Claude.png" LogicalName="ClaudeLogo.png" />
     <EmbeddedResource Include="Assets\Walking Orange.gif" LogicalName="WalkingOrange.gif" />

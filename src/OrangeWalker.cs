@@ -14,7 +14,8 @@ internal sealed class OrangeWalker : IDisposable
     {
         new("오렌지", "WalkingOrange.gif"), new("비행선", "Dirigible.gif"),
         new("빨간 자동차", "RedCar.gif", true, Scale: 1.5f, Crop: new Rectangle(50, 55, 74, 36)), new("아기 낙타", "BabyCamel.gif"),
-        new("오리 · 걷기", "DuckWalkSheet.png", true, 4, 2), new("커피 새 · 걷기", "CoffeeWalkSheet.png", false, 4, 2)
+        new("오리 · 걷기", "DuckWalkSheet.png", true, 4, 2), new("커피 새 · 걷기", "CoffeeWalkSheet.png", false, 4, 2),
+        new("고양이 검객 · 달리기", "CatRunSheet.png", false, 4, 2, 80)
     };
     private readonly Bitmap[] frames;
     private readonly int[] frameEnds;
@@ -94,14 +95,16 @@ internal sealed class OrangeWalker : IDisposable
         return 0;
     }
 
-    internal float Height(Size canvas) => Math.Min(height * scale, Math.Min(64, Math.Min(canvas.Width, canvas.Height) - 8));
+    internal float Height(Size canvas) => height * scale;
 
     internal void ChangeSize(int delta, Size canvas) =>
-        height = Math.Clamp(Height(canvas) + delta, 8, Math.Min(64, Math.Min(canvas.Width, canvas.Height) - 8)) / scale;
+        height = Math.Max(Height(canvas) + delta, 8) / scale;
+
+    private float TrackInset(Size canvas) => Math.Min(Height(canvas) / 2 + 2, Math.Min(canvas.Width, canvas.Height) / 2f - 2);
 
     internal double Perimeter(Size canvas)
     {
-        double inset = Height(canvas) / 2 + 2;
+        double inset = TrackInset(canvas);
         return 2 * (canvas.Width + canvas.Height - 4 * inset);
     }
 
@@ -109,7 +112,7 @@ internal sealed class OrangeWalker : IDisposable
     {
         float spriteHeight = Height(canvas);
         float spriteWidth = spriteHeight * frames[0].Width / frames[0].Height;
-        float inset = spriteHeight / 2 + 2;
+        float inset = TrackInset(canvas);
         float horizontal = canvas.Width - inset * 2, vertical = canvas.Height - inset * 2;
         double length = 2 * (horizontal + vertical);
         float offset = (float)((distance % length + length) % length);

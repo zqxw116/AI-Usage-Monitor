@@ -118,10 +118,21 @@ internal static class Program
             using var next = new OrangeWalker(OrangeWalker.Characters[4], car.PreferredSize);
             Assert(next.Height(new Size(594, 100)) == car.PreferredSize, "캐릭터 변경 시 자동차 확대 배율이 다른 캐릭터에 전이되지 않음");
         }
+        Assert(OrangeWalker.Characters.Count(item => item.Name.StartsWith("고양이")) == 1 && OrangeWalker.Characters.Last().Resource == "CatRunSheet.png", "고양이 메뉴에는 달리기만 유지");
+        var catResources = typeof(OrangeWalker).Assembly.GetManifestResourceNames().Where(name => name.StartsWith("Cat")).ToArray();
+        Assert(catResources.SequenceEqual(new[] { "CatRunSheet.png" }), "삭제한 고양이 시트는 실제 빌드 리소스에도 포함되지 않음");
+        using (var enlarged = new OrangeWalker(OrangeWalker.Characters.Last()))
+        {
+            var canvas = new Size(1094, 50);
+            enlarged.ChangeSize(1000, canvas);
+            Assert(enlarged.Height(canvas) == 1022, "캐릭터 크기가 기존 64픽셀·창 높이 상한을 넘어 증가");
+            enlarged.ChangeSize(500, canvas);
+            Assert(enlarged.Height(canvas) == 1522 && enlarged.Perimeter(canvas) > 0, "계속 확대해도 크기가 증가하고 외곽 이동 경로 유지");
+        }
         for (int selection = 0; selection < OrangeWalker.Characters.Length; selection++)
         {
             using var character = new OrangeWalker(OrangeWalker.Characters[selection]);
-            Assert(character.FrameCount == new[] { 32, 79, 92, 14, 8, 8 }[selection], OrangeWalker.Characters[selection].Name + " 캐릭터 프레임 로드");
+            Assert(character.FrameCount == new[] { 32, 79, 92, 14, 8, 8, 8 }[selection], OrangeWalker.Characters[selection].Name + " 캐릭터 프레임 로드");
             foreach (var canvas in new[] { new Size(1094, 50), new Size(594, 100) })
             foreach (int delta in new[] { -100, 14, 100 })
             {
@@ -130,16 +141,17 @@ internal static class Program
                 for (int i = 0; i < 500; i++)
                 {
                     var pose = character.PoseAt(loop * i / 500, canvas);
-                    if (pose.Bounds.Left < 1 || pose.Bounds.Top < 1 || pose.Bounds.Right > canvas.Width - 1 || pose.Bounds.Bottom > canvas.Height - 1)
+                    if (!float.IsFinite(pose.Center.X) || !float.IsFinite(pose.Center.Y) || pose.Center.X < 1 || pose.Center.Y < 1 || pose.Center.X > canvas.Width - 1 || pose.Center.Y > canvas.Height - 1)
                         throw new InvalidOperationException("캐릭터 회전·잘림 검증 실패");
                 }
             }
         }
-        tests.Add("여섯 캐릭터·두 모드·세 크기: 18000개 위치에서 회전 시 잘림 없음");
-        foreach (int selection in new[] { 4, 5 })
+        tests.Add("일곱 캐릭터·두 모드·세 크기: 21000개 위치에서 확대해도 이동 경로 중심 유지");
+        foreach (int selection in new[] { 4, 5, 6 })
         {
             using var character = new OrangeWalker(OrangeWalker.Characters[selection], 64);
-            Assert(character.CycleMilliseconds == 800 && character.FrameAt(0) != character.FrameAt(0.1) && character.FrameAt(0.8) == 0,
+            int delay = OrangeWalker.Characters[selection].FrameDelay;
+            Assert(character.CycleMilliseconds == delay * 8 && character.FrameAt(0) != character.FrameAt(delay / 1000d) && character.FrameAt(delay * 8 / 1000d) == 0,
                 OrangeWalker.Characters[selection].Name + " 8프레임 걷기 순환 재생");
             var walkDirectory = Path.Combine(directory, "걷기 동작 " + selection);
             Directory.CreateDirectory(walkDirectory);
@@ -148,7 +160,7 @@ internal static class Program
                 using var image = new Bitmap(160, 100);
                 using var graphics = Graphics.FromImage(image);
                 graphics.Clear(Color.FromArgb(24, 28, 34));
-                character.Draw(graphics, new Size(160, 100), frame * 0.1 + 0.001, 46);
+                character.Draw(graphics, new Size(160, 100), frame * delay / 1000d + 0.001, 46);
                 image.Save(Path.Combine(walkDirectory, frame.ToString("D3") + ".png"));
             }
             using var firstWalk = new Bitmap(Path.Combine(walkDirectory, "000.png"));
@@ -171,19 +183,20 @@ internal static class Program
                     for (int step = 0; step < 1000; step++)
                     {
                         var pose = sprite.PoseAt(length * step / 1000, canvas);
-                        if (pose.Bounds.Left < 1 || pose.Bounds.Top < 1 || pose.Bounds.Right > canvas.Width - 1 || pose.Bounds.Bottom > canvas.Height - 1)
+                        if (!float.IsFinite(pose.Center.X) || !float.IsFinite(pose.Center.Y) || pose.Center.X < 1 || pose.Center.Y < 1 || pose.Center.X > canvas.Width - 1 || pose.Center.Y > canvas.Height - 1)
                             throw new InvalidOperationException("오렌지 회전·크기·화면 경계 검증 실패");
                     }
                     var start = sprite.PoseAt(0, canvas);
                     Assert(start == sprite.PoseAt(length, canvas), "오렌지 한 바퀴 뒤 처음 위치·방향으로 복귀");
                 }
-                float inset = sprite.Height(canvas) / 2 + 2;
+                float inset = sprite.PoseAt(0, canvas).Center.X;
                 double horizontal = canvas.Width - inset * 2, tall = canvas.Height - inset * 2;
                 var poses = new[] { sprite.PoseAt(horizontal / 2, canvas), sprite.PoseAt(horizontal + tall / 2, canvas),
                     sprite.PoseAt(horizontal * 1.5 + tall, canvas), sprite.PoseAt(horizontal * 2 + tall * 1.5, canvas) };
                 Assert(poses.Select(pose => pose.Angle).SequenceEqual(new[] { 0f, -90f, -180f, -270f }), "아래→오른쪽→위→왼쪽 순서로 발 방향을 90도씩 회전");
             }
-            tests.Add("최소·기본·최대 크기와 가로·세로 모드: 6000개 위치에서 오렌지 잘림 없음");
+            tests.Add("작은 크기·확대 크기와 가로·세로 모드: 6000개 위치에서 이동 경로 유지");
+            sprite.ChangeSize(22 - (int)sprite.Height(new Size(120, 60)), new Size(120, 60));
             using var firstFrame = new Bitmap(120, 60);
             using var laterFrame = new Bitmap(120, 60);
             using (var graphics = Graphics.FromImage(firstFrame)) sprite.Draw(graphics, new Size(120, 60), 0, 40);
@@ -282,6 +295,20 @@ internal static class Program
         Assert(form.OrangeHeight == orangeBefore + 4, "오렌지 ＋ 버튼 클릭으로 캐릭터만 확대");
         ClickButton(2, true);
         Assert(form.OrangeHeight == orangeBefore, "오렌지 − 버튼 클릭으로 캐릭터만 축소");
+        var originalSize = form.ClientSize;
+        int buttonX = (int)((form.DesignSize.Width - 94 + 52) * form.ClientSize.Width / (double)form.DesignSize.Width);
+        int buttonY = (int)(9 * form.ClientSize.Height / (double)form.DesignSize.Height);
+        using var buttonBefore = new Bitmap(form.ClientSize.Width, form.ClientSize.Height);
+        form.DrawToBitmap(buttonBefore, new Rectangle(Point.Empty, form.ClientSize));
+        for (int count = 0; count < 120; count++) ClickButton(2);
+        Assert(form.OrangeHeight == orangeBefore + 480 && form.ClientSize == originalSize, "＋ 120회 클릭으로 창 크기 유지하며 계속 확대");
+        form.PreviewOrange(0.5, 0.15);
+        using var buttonAfter = new Bitmap(form.ClientSize.Width, form.ClientSize.Height);
+        form.DrawToBitmap(buttonAfter, new Rectangle(Point.Empty, form.ClientSize));
+        Assert(buttonBefore.GetPixel(buttonX, buttonY) == buttonAfter.GetPixel(buttonX, buttonY), "큰 캐릭터가 조절 버튼 위를 지나도 버튼을 가리지 않음");
+        Capture("상한 없는 캐릭터 확대.png");
+        for (int count = 0; count < 120; count++) ClickButton(2, true);
+        Assert(form.OrangeHeight == orangeBefore, "크게 확대한 뒤 − 버튼으로 원래 크기 복원");
         form.ClientSize = new Size(10000, 10000);
         Assert(form.ClientSize == form.Size && MonitorForm.WithinDesktop(form.Bounds), "화면보다 크게 요청해도 실제 창과 그리기 영역이 일치하여 버튼이 잘리지 않음");
         form.ClientSize = new Size(1094, 50);
@@ -304,7 +331,7 @@ internal static class Program
             form.PreviewOrange(0.15, 0.2);
             Capture("캐릭터 " + selection + ".png");
         }
-        foreach (int selection in new[] { 4, 5 })
+        foreach (int selection in new[] { 4, 5, 6 })
         {
             form.SelectCharacter(selection);
             form.ChangeOrangeSize(14);
