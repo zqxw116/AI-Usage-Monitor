@@ -32,6 +32,7 @@ internal sealed class MonitorForm : Form
     private NotifyIcon? trayIcon;
     private ContextMenuStrip? trayMenu;
     private readonly Stopwatch orangeClock = new();
+    private bool interactiveMove;
     private readonly bool liveAnimation;
     private double orangeDistance, orangeTime;
     private readonly (double Period, double Offset)[] iconMotion = Enumerable.Range(0, 3)
@@ -154,7 +155,7 @@ internal sealed class MonitorForm : Form
         timer.Tick += async (_, _) =>
         {
             if (Environment.TickCount64 >= nextUpdateCheck) ScheduleUpdateCheck();
-            Invalidate();
+            if (!interactiveMove) Invalidate();
             await Task.WhenAll(sources.Select(source => source.TickAsync()));
         };
         if (live) Shown += async (_, _) =>
@@ -375,7 +376,7 @@ internal sealed class MonitorForm : Form
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
-        if (!liveAnimation || orangeTimer is null || !Visible) return;
+        if (!liveAnimation || orangeTimer is null || !Visible || interactiveMove) return;
         if (WindowState == FormWindowState.Minimized) HideToTray();
         else { orangeClock.Start(); orangeTimer.Start(); }
     }
@@ -427,6 +428,12 @@ internal sealed class MonitorForm : Form
 
     protected override void WndProc(ref Message message)
     {
+        if (message.Msg == 0x231) // WM_ENTERSIZEMOVE
+        {
+            interactiveMove = true;
+            orangeTimer.Stop();
+            orangeClock.Stop();
+        }
         if (message.Msg is 0x214 or 0x216) // WM_SIZING / WM_MOVING
         {
             var proposed = Marshal.PtrToStructure<NativeRect>(message.LParam).Rectangle;
@@ -437,6 +444,16 @@ internal sealed class MonitorForm : Form
             return;
         }
         base.WndProc(ref message);
+        if (message.Msg == 0x232) // WM_EXITSIZEMOVE, including a cancelled drag
+        {
+            interactiveMove = false;
+            if (liveAnimation && Visible && WindowState == FormWindowState.Normal)
+            {
+                orangeClock.Start();
+                orangeTimer.Start();
+            }
+            Invalidate();
+        }
         if (message.Msg == 0x84 && WindowState == FormWindowState.Normal) // WM_NCHITTEST
         {
             long packed = message.LParam.ToInt64();
@@ -783,8 +800,10 @@ internal sealed class MonitorForm : Form
             switch (i) { case 0: TogglePin(); break; case 1: ToggleLayout(); break; case 2: ChangeOrangeSize(4); break; case 3: Close(); break; case 4: HideToTray(); break; case 5: ChangeOrangeSize(-4); break; case 6: characterMenu.Show(this, new Point(e.X, e.Y)); break; case 7: ShowConnections(); break; case 8: ToggleTools(); break; }
             return;
         }
+        var screen = PointToScreen(e.Location);
+        var position = (IntPtr)unchecked((screen.Y << 16) | (screen.X & 0xffff));
         ReleaseCapture();
-        SendMessage(Handle, 0xA1, (IntPtr)2, IntPtr.Zero);
+        SendMessage(Handle, 0xA1, (IntPtr)2, position);
     }
 
     protected override void Dispose(bool disposing)
