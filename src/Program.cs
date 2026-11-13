@@ -12,6 +12,7 @@ internal static class Program
         ApplicationConfiguration.Initialize();
         using var codex = new UsageSource(false);
         using var claude = new UsageSource(true);
+        using var gemini = new UsageSource(ServiceKind.Gemini);
         if (args.Length == 2 && args[0] == "--verify")
         {
             Verify(args[1], codex, claude);
@@ -20,9 +21,10 @@ internal static class Program
         string mutexName = args.Length == 2 && args[0] == "--watch-test" ? "Local\\HaneulAiUsageMonitorVerification" : "Local\\HaneulAiUsageMonitor";
         using var instance = new Mutex(true, mutexName, out bool first);
         if (!first) return;
-        using var form = new MonitorForm(codex, claude);
+        using var form = new MonitorForm(codex, claude, settings: args.Length == 2 && args[0] == "--watch-test" ? new MonitorSettings() : null, gemini: gemini);
         if (args.Length == 2 && args[0] == "--watch-test")
         {
+            form.Opacity = 0;
             Directory.CreateDirectory(args[1]);
             Snapshot? initialCodex = null, initialClaude = null;
             var started = DateTimeOffset.UtcNow;
@@ -67,6 +69,8 @@ internal static class Program
             if (!condition) throw new InvalidOperationException("실패: " + name);
             tests.Add(name);
         }
+
+        ServiceConnectionChecks.Run(directory, Assert);
         using (var json = JsonDocument.Parse("{\"five_hour\":{\"utilization\":91,\"resets_at\":\"2026-10-12T05:00:00Z\"},\"seven_day\":null}"))
         {
             var result = UsageParser.Parse(json.RootElement, true, DateTimeOffset.UtcNow);
@@ -106,107 +110,7 @@ internal static class Program
         var crossing = DesktopBounds.Fit(new Rectangle(1700, 300, 1094, 50), layouts[0], new Size(1094, 50));
         Assert(crossing.X == 1700 && crossing.Right > 1920, "모니터 경계를 가로질러 좌우 이동 허용");
         tests.Add("서로 다른 높이·음수 좌표·화면 사이 빈틈 포함 2000개 다중 모니터 경계 사례 통과");
-        using (var car = new OrangeWalker(OrangeWalker.Characters[2]))
-        {
-            Assert(car.Height(new Size(594, 100)) == 33 && car.Height(new Size(1094, 50)) == 33, "빨간 자동차 차체 확대 후 얇은 창에서도 크기 증가 여유 유지");
-            car.ChangeSize(-4, new Size(594, 100));
-            Assert(car.Height(new Size(594, 100)) == 29, "자동차 크기 버튼 4픽셀 조절");
-            car.ChangeSize(4, new Size(1094, 50));
-            Assert(car.Height(new Size(1094, 50)) == 33, "자동차 축소 후 확대 복원");
-            car.ChangeSize(4, new Size(1094, 50));
-            Assert(car.Height(new Size(1094, 50)) == 37, "가로 모드에서도 자동차 확대 버튼이 실제 크기를 증가시킴");
-            using var next = new OrangeWalker(OrangeWalker.Characters[4], car.PreferredSize);
-            Assert(next.Height(new Size(594, 100)) == car.PreferredSize, "캐릭터 변경 시 자동차 확대 배율이 다른 캐릭터에 전이되지 않음");
-        }
-        Assert(OrangeWalker.Characters.Count(item => item.Name.StartsWith("고양이")) == 1 && OrangeWalker.Characters.Last().Resource == "CatRunSheet.png", "고양이 메뉴에는 달리기만 유지");
-        var catResources = typeof(OrangeWalker).Assembly.GetManifestResourceNames().Where(name => name.StartsWith("Cat")).ToArray();
-        Assert(catResources.SequenceEqual(new[] { "CatRunSheet.png" }), "삭제한 고양이 시트는 실제 빌드 리소스에도 포함되지 않음");
-        using (var enlarged = new OrangeWalker(OrangeWalker.Characters.Last()))
-        {
-            var canvas = new Size(1094, 50);
-            enlarged.ChangeSize(1000, canvas);
-            Assert(enlarged.Height(canvas) == 1022, "캐릭터 크기가 기존 64픽셀·창 높이 상한을 넘어 증가");
-            enlarged.ChangeSize(500, canvas);
-            Assert(enlarged.Height(canvas) == 1522 && enlarged.Perimeter(canvas) > 0, "계속 확대해도 크기가 증가하고 외곽 이동 경로 유지");
-        }
-        for (int selection = 0; selection < OrangeWalker.Characters.Length; selection++)
-        {
-            using var character = new OrangeWalker(OrangeWalker.Characters[selection]);
-            Assert(character.FrameCount == new[] { 32, 79, 92, 14, 8, 8, 8 }[selection], OrangeWalker.Characters[selection].Name + " 캐릭터 프레임 로드");
-            foreach (var canvas in new[] { new Size(1094, 50), new Size(594, 100) })
-            foreach (int delta in new[] { -100, 14, 100 })
-            {
-                character.ChangeSize(delta, canvas);
-                double loop = character.Perimeter(canvas);
-                for (int i = 0; i < 500; i++)
-                {
-                    var pose = character.PoseAt(loop * i / 500, canvas);
-                    if (!float.IsFinite(pose.Center.X) || !float.IsFinite(pose.Center.Y) || pose.Center.X < 1 || pose.Center.Y < 1 || pose.Center.X > canvas.Width - 1 || pose.Center.Y > canvas.Height - 1)
-                        throw new InvalidOperationException("캐릭터 회전·잘림 검증 실패");
-                }
-            }
-        }
-        tests.Add("일곱 캐릭터·두 모드·세 크기: 21000개 위치에서 확대해도 이동 경로 중심 유지");
-        foreach (int selection in new[] { 4, 5, 6 })
-        {
-            using var character = new OrangeWalker(OrangeWalker.Characters[selection], 64);
-            int delay = OrangeWalker.Characters[selection].FrameDelay;
-            Assert(character.CycleMilliseconds == delay * 8 && character.FrameAt(0) != character.FrameAt(delay / 1000d) && character.FrameAt(delay * 8 / 1000d) == 0,
-                OrangeWalker.Characters[selection].Name + " 8프레임 걷기 순환 재생");
-            var walkDirectory = Path.Combine(directory, "걷기 동작 " + selection);
-            Directory.CreateDirectory(walkDirectory);
-            for (int frame = 0; frame < 8; frame++)
-            {
-                using var image = new Bitmap(160, 100);
-                using var graphics = Graphics.FromImage(image);
-                graphics.Clear(Color.FromArgb(24, 28, 34));
-                character.Draw(graphics, new Size(160, 100), frame * delay / 1000d + 0.001, 46);
-                image.Save(Path.Combine(walkDirectory, frame.ToString("D3") + ".png"));
-            }
-            using var firstWalk = new Bitmap(Path.Combine(walkDirectory, "000.png"));
-            using var secondWalk = new Bitmap(Path.Combine(walkDirectory, "003.png"));
-            int difference = 0;
-            for (int y = 0; y < 100; y++) for (int x = 0; x < 160; x++)
-                if (firstWalk.GetPixel(x, y) != secondWalk.GetPixel(x, y)) difference++;
-            Assert(difference > 0, OrangeWalker.Characters[selection].Name + " 동일 위치에서 몸·다리 동작 프레임이 실제로 변화");
-        }
-        using (var sprite = new OrangeWalker())
-        {
-            Assert(sprite.FrameCount == 32 && sprite.CycleMilliseconds == 1060, "오렌지 GIF 32프레임과 원본 1.06초 재생 주기 유지");
-            Assert(sprite.FrameAt(0) != sprite.FrameAt(0.53) && sprite.FrameAt(0) == sprite.FrameAt(1.06), "걷기 프레임 변화와 GIF 반복");
-            foreach (var canvas in new[] { new Size(1094, 50), new Size(594, 100) })
-            {
-                foreach (int delta in new[] { -100, 14, 100 })
-                {
-                    sprite.ChangeSize(delta, canvas);
-                    double length = sprite.Perimeter(canvas);
-                    for (int step = 0; step < 1000; step++)
-                    {
-                        var pose = sprite.PoseAt(length * step / 1000, canvas);
-                        if (!float.IsFinite(pose.Center.X) || !float.IsFinite(pose.Center.Y) || pose.Center.X < 1 || pose.Center.Y < 1 || pose.Center.X > canvas.Width - 1 || pose.Center.Y > canvas.Height - 1)
-                            throw new InvalidOperationException("오렌지 회전·크기·화면 경계 검증 실패");
-                    }
-                    var start = sprite.PoseAt(0, canvas);
-                    Assert(start == sprite.PoseAt(length, canvas), "오렌지 한 바퀴 뒤 처음 위치·방향으로 복귀");
-                }
-                float inset = sprite.PoseAt(0, canvas).Center.X;
-                double horizontal = canvas.Width - inset * 2, tall = canvas.Height - inset * 2;
-                var poses = new[] { sprite.PoseAt(horizontal / 2, canvas), sprite.PoseAt(horizontal + tall / 2, canvas),
-                    sprite.PoseAt(horizontal * 1.5 + tall, canvas), sprite.PoseAt(horizontal * 2 + tall * 1.5, canvas) };
-                Assert(poses.Select(pose => pose.Angle).SequenceEqual(new[] { 0f, -90f, -180f, -270f }), "아래→오른쪽→위→왼쪽 순서로 발 방향을 90도씩 회전");
-            }
-            tests.Add("작은 크기·확대 크기와 가로·세로 모드: 6000개 위치에서 이동 경로 유지");
-            sprite.ChangeSize(22 - (int)sprite.Height(new Size(120, 60)), new Size(120, 60));
-            using var firstFrame = new Bitmap(120, 60);
-            using var laterFrame = new Bitmap(120, 60);
-            using (var graphics = Graphics.FromImage(firstFrame)) sprite.Draw(graphics, new Size(120, 60), 0, 40);
-            using (var graphics = Graphics.FromImage(laterFrame)) sprite.Draw(graphics, new Size(120, 60), 0.53, 40);
-            bool changed = false;
-            for (int y = 0; y < 60; y++) for (int x = 0; x < 120; x++)
-                if (firstFrame.GetPixel(x, y) != laterFrame.GetPixel(x, y)) changed = true;
-            Assert(changed, "실제 렌더링한 GIF 걷기 프레임의 픽셀이 변화");
-            Assert(firstFrame.GetPixel(0, 0).A == 0, "GIF 주변 투명 배경 유지");
-        }
+        PetChecks.Run(Path.Combine(directory, "펫 검증"), Assert);
         string? originalCodexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
         string? originalClaudeHome = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
         var fixtureHome = Path.Combine(directory, "자동갱신검증");
@@ -229,6 +133,31 @@ internal static class Program
         }
         // No synchronization context here; wait for read-only live verification, then render on this STA thread.
         Task.WhenAll(codex.TickAsync(true), claude.TickAsync(true)).GetAwaiter().GetResult();
+        ServiceConnectionChecks.RunVisual(directory, Assert);
+        using (var unusedCodex = new UsageSource(false))
+        using (var single = new MonitorForm(unusedCodex, claude, false, new MonitorSettings { CodexEnabled = false }))
+        using (var screenshot = new Bitmap(single.Width, single.Height))
+        {
+            single.DrawToBitmap(screenshot, new Rectangle(Point.Empty, single.Size));
+            screenshot.Save(Path.Combine(directory, "Claude만 실제 사용량.png"));
+        }
+        using (var palette = new MonitorForm(codex, claude, false))
+        using (var image = new Bitmap(220, 50))
+        using (var graphics = Graphics.FromImage(image))
+        {
+            foreach (bool isClaude in new[] { false, true })
+            foreach (bool outdated in new[] { false, true })
+            {
+                graphics.Clear(Color.Black);
+                palette.DrawQuota(graphics, new Quota(29, DateTimeOffset.UtcNow.AddHours(1)), 0, 0, "5시간", isClaude, outdated);
+                Assert(image.GetPixel(10, 34) == MonitorForm.RemainingColor(71, isClaude),
+                    (isClaude ? "Claude" : "Codex") + (outdated ? " 일시 오류·지연 중에도" : " 정상 조회 시") + " 71% 잔량 구간 색상으로 실제 렌더링");
+                if (outdated) image.Save(Path.Combine(directory, isClaude ? "Claude 71% 조회 지연 색상.png" : "Codex 71% 조회 지연 색상.png"));
+            }
+            graphics.Clear(Color.Black);
+            palette.DrawQuota(graphics, new Quota(29, DateTimeOffset.UtcNow.AddSeconds(-1)), 0, 0, "5시간", true, true);
+            Assert(image.GetPixel(10, 34) == Color.FromArgb(12, 16, 22), "초기화 시각이 지난 값은 색상 바를 채우지 않고 확인 대기");
+        }
         using var form = new MonitorForm(codex, claude, false);
         form.CreateControl();
         // 표시된 창에서만 최상단 네이티브 스타일을 검증하며, 투명하게 표시해 사용자 화면을 가리지 않습니다.
@@ -237,6 +166,8 @@ internal static class Program
         form.Show();
         Application.DoEvents();
         var window = form.Handle;
+        Assert(!form.ToolsExpanded && form.DesignSize == new Size(1030, 50), "기본 화면은 버튼 목록을 접은 가로 한 줄");
+        form.ToggleTools();
         Assert((GetWindowLong(window, -20) & 0x40000) == 0, "실제 창의 작업표시줄 표시 스타일 비활성화");
         void Capture(string name)
         {
@@ -247,8 +178,9 @@ internal static class Program
         void ClickButton(int column, bool bottom = false)
         {
             var design = form.DesignSize;
-            int x = (int)Math.Round((design.Width - 94 + 14 + column * 22) * form.ClientSize.Width / (double)design.Width);
-            int y = (int)Math.Round((bottom ? 36 : 14) * form.ClientSize.Height / (double)design.Height);
+            var button = form.ButtonBounds((bottom ? 3 : 0) + column);
+            int x = (int)Math.Round((button.X + button.Width / 2) * form.ClientSize.Width / design.Width);
+            int y = (int)Math.Round((button.Y + button.Height / 2) * form.ClientSize.Height / design.Height);
             MonitorForm.SendMessage(window, 0x201, (IntPtr)1, (IntPtr)((y << 16) | x));
             MonitorForm.SendMessage(window, 0x202, IntPtr.Zero, (IntPtr)((y << 16) | x));
         }
@@ -273,7 +205,7 @@ internal static class Program
                 Marshal.StructureToPtr(new MonitorForm.NativeRect(new Rectangle(areaNow.Left - 100, areaNow.Top - 100, 900, 400)), pointer, false);
                 MonitorForm.SendMessage(window, 0x214, (IntPtr)edge, pointer);
                 var resized = Marshal.PtrToStructure<MonitorForm.NativeRect>(pointer).Rectangle;
-                if (!MonitorForm.WithinDesktop(resized) || Math.Abs(resized.Height - resized.Width * 50.0 / 1094) > 1)
+                if (!MonitorForm.WithinDesktop(resized) || Math.Abs(resized.Height - resized.Width * 50.0 / 1124) > 1)
                     throw new InvalidOperationException("테두리 크기 조절 검증 실패");
             }
             tests.Add("Windows의 8방향 테두리 크기 조절 메시지: 비율·경계 유지");
@@ -286,17 +218,18 @@ internal static class Program
         var corner = form.PointToScreen(new Point(form.ClientSize.Width - 1, form.ClientSize.Height - 1));
         var hit = MonitorForm.SendMessage(window, 0x84, IntPtr.Zero, (IntPtr)((corner.Y << 16) | (corner.X & 0xffff))).ToInt32();
         Assert(hit == 17, "실제 창 모서리에서 크기 조절 영역 인식");
+        Assert(form.TopMost && (GetWindowLong(window, -20) & 8) != 0, "시작할 때 Windows 최상단 스타일 활성화");
         ClickButton(0);
-        Assert(form.TopMost && (GetWindowLong(window, -20) & 8) != 0, "핀 버튼 클릭으로 Windows 최상단 스타일 활성화");
+        Assert(!form.TopMost && (GetWindowLong(window, -20) & 8) == 0, "핀 버튼 클릭으로 Windows 최상단 스타일 해제");
         ClickButton(0);
-        Assert(!form.TopMost && (GetWindowLong(window, -20) & 8) == 0, "핀 버튼 재클릭으로 Windows 최상단 스타일 해제");
+        Assert(form.TopMost && (GetWindowLong(window, -20) & 8) != 0, "핀 버튼 재클릭으로 최상단 복원");
         float orangeBefore = form.OrangeHeight;
         ClickButton(2);
-        Assert(form.OrangeHeight == orangeBefore + 4, "오렌지 ＋ 버튼 클릭으로 캐릭터만 확대");
+        Assert(form.OrangeHeight == orangeBefore + 4, "캐릭터 ＋ 버튼 클릭으로 캐릭터만 확대");
         ClickButton(2, true);
-        Assert(form.OrangeHeight == orangeBefore, "오렌지 − 버튼 클릭으로 캐릭터만 축소");
+        Assert(form.OrangeHeight == orangeBefore, "캐릭터 − 버튼 클릭으로 캐릭터만 축소");
         var originalSize = form.ClientSize;
-        int buttonX = (int)((form.DesignSize.Width - 94 + 52) * form.ClientSize.Width / (double)form.DesignSize.Width);
+        int buttonX = (int)((form.ButtonBounds(2).X + 8) * form.ClientSize.Width / (double)form.DesignSize.Width);
         int buttonY = (int)(9 * form.ClientSize.Height / (double)form.DesignSize.Height);
         using var buttonBefore = new Bitmap(form.ClientSize.Width, form.ClientSize.Height);
         form.DrawToBitmap(buttonBefore, new Rectangle(Point.Empty, form.ClientSize));
@@ -311,17 +244,17 @@ internal static class Program
         Assert(form.OrangeHeight == orangeBefore, "크게 확대한 뒤 − 버튼으로 원래 크기 복원");
         form.ClientSize = new Size(10000, 10000);
         Assert(form.ClientSize == form.Size && MonitorForm.WithinDesktop(form.Bounds), "화면보다 크게 요청해도 실제 창과 그리기 영역이 일치하여 버튼이 잘리지 않음");
-        form.ClientSize = new Size(1094, 50);
+        form.ClientSize = new Size(1124, 50);
         form.PreviewOrange(0.15, 0.2);
         Capture("미리보기.png");
-        form.ClientSize = new Size(875, 40);
+        form.ClientSize = new Size(899, 40);
         ClickButton(1);
-        Assert(form.DesignSize == new Size(594, 100) && form.ClientSize == new Size(475, 80), "전환 버튼 클릭으로 배율을 유지한 Codex·Claude 두 줄 배치");
+        Assert(form.DesignSize == new Size(624, 100) && form.ClientSize == new Size(499, 80), "전환 버튼 클릭으로 배율을 유지한 Codex·Claude 두 줄 배치");
         Capture("세로 축소.png");
         ClickButton(1);
-        Assert(form.DesignSize == new Size(1094, 50) && form.ClientSize == new Size(875, 40), "전환 버튼 재클릭으로 배율을 유지한 가로 배치 복원");
+        Assert(form.DesignSize == new Size(1124, 50) && form.ClientSize == new Size(899, 40), "전환 버튼 재클릭으로 배율을 유지한 가로 배치 복원");
         Capture("가로 축소.png");
-        form.ClientSize = new Size(1094, 50);
+        form.ClientSize = new Size(1124, 50);
         ClickButton(1);
         Capture("세로 미리보기.png");
         for (int selection = 0; selection < OrangeWalker.Characters.Length; selection++)
@@ -331,7 +264,7 @@ internal static class Program
             form.PreviewOrange(0.15, 0.2);
             Capture("캐릭터 " + selection + ".png");
         }
-        foreach (int selection in new[] { 4, 5, 6 })
+        foreach (int selection in Enumerable.Range(0, OrangeWalker.Characters.Length))
         {
             form.SelectCharacter(selection);
             form.ChangeOrangeSize(14);
@@ -366,14 +299,16 @@ internal static class Program
             for (int i = 0; i < positions.Length; i++)
             {
                 form.PreviewOrange(positions[i] / loop, i * 0.2);
-                Capture("오렌지 " + labels[i] + ".png");
+                Capture("오리 " + labels[i] + ".png");
             }
         }
         form.PreviewOrange(0.15, 0.2);
         form.ClientSize = new Size(743, 125);
         Capture("세로 확대.png");
         form.ToggleLayout();
-        form.ClientSize = new Size(1094, 50);
+        form.ToggleTools();
+        form.ClientSize = form.DesignSize;
+        Capture("메뉴 접힘.png");
         var report = new { tests, codex = new { codex.Status, codex.Failed, codex.Data }, claude = new { claude.Status, claude.Failed, claude.Data }, size = new { width = form.Width, height = form.Height }, design = form.DesignSize };
         File.WriteAllText(Path.Combine(directory, "검증결과.json"), JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping }));
     }

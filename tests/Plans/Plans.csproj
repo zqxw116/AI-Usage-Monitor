@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/Usage.cs" Link="Usage.cs" />
+    <Compile Include="../../src/GeminiApi.cs" Link="GeminiApi.cs" />
+    <Compile Include="../../src/DistributionClaudeAuth.cs" Link="DistributionClaudeAuth.cs" />
+  </ItemGroup>
+</Project>

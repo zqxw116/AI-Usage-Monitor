@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/OrangeWalker.cs" Link="OrangeWalker.cs" />
+    <Compile Include="../../src/PetChecks.cs" Link="PetChecks.cs" />
+    <EmbeddedResource Include="../../src/Assets/DuckWalkSheet.png" LogicalName="DuckWalkSheet.png" />
+    <EmbeddedResource Include="../../src/Assets/ChubbyBabyPenguin.gif" LogicalName="ChubbyBabyPenguin.gif" />
+    <EmbeddedResource Include="../../src/Assets/BabyPenguin.gif" LogicalName="BabyPenguin.gif" />
+    <EmbeddedResource Include="../../src/Assets/SquidHatPenguin.gif" LogicalName="SquidHatPenguin.gif" />
+  </ItemGroup>
+</Project>
