@@ -69,11 +69,14 @@ jobs:
           $tag = $env:RELEASE_TAG
           gh release create $tag 'release/AI-Usage-Monitor-win-x64.exe' 'release/SHA256SUMS.txt' --verify-tag --draft --title $tag --generate-notes
           if ($LASTEXITCODE -ne 0) { throw 'Release creation failed; inspect any existing draft before retrying' }
-          $json = gh api "repos/$env:GH_REPO/releases/tags/$tag"
+          # A draft is visible in the authenticated release list before it is accessible by tag.
+          $releaseId = gh api --paginate "repos/$env:GH_REPO/releases?per_page=100" --jq ".[] | select(.draft == true and .tag_name == `"$tag`") | .id"
+          if ($LASTEXITCODE -ne 0 -or @($releaseId).Count -ne 1 -or $releaseId -notmatch '^\d+$') { throw 'Cannot identify created draft' }
+          $json = gh api "repos/$env:GH_REPO/releases/$releaseId"
           if ($LASTEXITCODE -ne 0) { throw 'Cannot read created release' }
           $release = $json | ConvertFrom-Json
           $asset = @($release.assets | Where-Object { $_.name -eq 'AI-Usage-Monitor-win-x64.exe' })
           $expected = 'sha256:' + (Get-FileHash -LiteralPath 'release/AI-Usage-Monitor-win-x64.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($asset.Count -ne 1 -or $asset[0].digest -ne $expected) { throw 'GitHub asset digest mismatch; release left as draft' }
-          gh release edit $tag --draft=false --latest
+          gh api --method PATCH "repos/$env:GH_REPO/releases/$releaseId" -F draft=false -f make_latest=true --silent
           if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }
