@@ -1,6 +1,6 @@
 namespace UsageMonitor;
 
-// The distributed monitor uses the Claude Code login. It does not open Desktop profiles.
+// Lightweight authentication seam for parser-only tests; excluded from the application.
 internal sealed class ClaudeDesktopCredential
 {
     public string? Bearer { get; init; }

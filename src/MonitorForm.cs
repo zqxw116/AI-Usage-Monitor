@@ -32,6 +32,8 @@ internal sealed class MonitorForm : Form
     private NotifyIcon? trayIcon;
     private ContextMenuStrip? trayMenu;
     private readonly Stopwatch orangeClock = new();
+    private readonly long[] refreshStarts = [-1, -1, -1];
+    private readonly bool[] refreshObserved = new bool[3];
     private bool interactiveMove;
     private readonly bool liveAnimation;
     private double orangeDistance, orangeTime;
@@ -45,6 +47,8 @@ internal sealed class MonitorForm : Form
     private readonly Font valueFont = new("맑은 고딕", 12.5f, FontStyle.Bold, GraphicsUnit.Pixel);
     private readonly Font timeFont = new("맑은 고딕", 12f, FontStyle.Regular, GraphicsUnit.Pixel);
     private readonly Font brandFont = new("Segoe UI", 11f, FontStyle.Bold, GraphicsUnit.Pixel);
+    private readonly Dictionary<(string Name, int Color), (Bitmap Image, float Width)[]> brandGlyphs = new();
+    private readonly StringFormat brandFormat = (StringFormat)StringFormat.GenericTypographic.Clone();
     private readonly Font buttonFont = new("맑은 고딕", 12f, FontStyle.Regular, GraphicsUnit.Pixel);
     private bool vertical;
     private bool toolsExpanded;
@@ -141,13 +145,15 @@ internal sealed class MonitorForm : Form
             var region = Rectangle.Ceiling(new RectangleF(damage.X * sx, damage.Y * sy, damage.Width * sx, damage.Height * sy));
             region.Inflate(2, 2);
             Invalidate(region);
-            if (this.settings.VisualEffects)
+            if (this.settings.VisualEffects || sources.Any(source => RefreshSpinActive(source)))
             {
                 foreach (var panel in Panels())
                 {
                     var box = panel.Bounds;
                     Invalidate(Rectangle.Ceiling(new RectangleF((box.X + 18) * sx, (box.Y + 3) * sy, 36 * sx, 29 * sy)));
-                    if (panel.Source.Data is not null)
+                    if (this.settings.VisualEffects)
+                        Invalidate(Rectangle.Ceiling(new RectangleF((box.X + 3) * sx, (box.Y + 26) * sy, 66 * sx, 22 * sy)));
+                    if (this.settings.VisualEffects && panel.Source.Data is not null)
                         Invalidate(Rectangle.Ceiling(new RectangleF((box.X + 79) * sx, (box.Y + 30) * sy, (box.Width - 88) * sx, 12 * sy)));
                 }
             }
@@ -171,6 +177,12 @@ internal sealed class MonitorForm : Form
     private void RefreshDisplay()
     {
         if (IsDisposed) return;
+        foreach (var source in sources)
+        {
+            int index = (int)source.Kind;
+            if (source.Refreshing && !refreshObserved[index]) refreshStarts[index] = Environment.TickCount64;
+            refreshObserved[index] = source.Refreshing;
+        }
         UpdateCodexWidth();
         RefreshLayout();
         Invalidate();
@@ -344,6 +356,7 @@ internal sealed class MonitorForm : Form
 
     internal void ShowConnections()
     {
+        foreach (var source in sources.Where(source => source.Enabled)) _ = source.RefreshAsync();
         if (connections is { IsDisposed: false }) { connections.Activate(); return; }
         connections = new ConnectionForm(sources, SetServiceEnabled) { TopMost = TopMost };
         connections.UpdateRequested += async (_, _) => await UpdateAppAsync();
@@ -586,6 +599,52 @@ internal sealed class MonitorForm : Form
         return new Bitmap(image, 64, 64);
     }
 
+    private bool RefreshSpinActive(UsageSource source) => source.Refreshing ||
+        refreshStarts[(int)source.Kind] >= 0 && Environment.TickCount64 - refreshStarts[(int)source.Kind] < 800;
+
+    internal static RectangleF ServiceIconBounds(Rectangle panel) => new(panel.X + 18, panel.Y + 3, 36, 27);
+
+    private void DrawBrand(Graphics g, string name, Color color, RectangleF area, double phase, bool hasPlan)
+    {
+        if (!settings.VisualEffects) { DrawText(g, name, brandFont, color, area, true); return; }
+        const int padding = 2;
+        var key = (name, color.ToArgb());
+        if (!brandGlyphs.TryGetValue(key, out var glyphs))
+        {
+            glyphs = name.Select(character => character.ToString())
+                .Select(glyph =>
+                {
+                    float width = g.MeasureString(glyph, brandFont, PointF.Empty, brandFormat).Width;
+                    var image = new Bitmap((int)Math.Ceiling(width) + padding * 2,
+                        (int)Math.Ceiling(brandFont.GetHeight(g)) + padding * 2, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+                    image.SetResolution(g.DpiX, g.DpiY);
+                    using var raster = Graphics.FromImage(image);
+                    raster.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
+                    using var brush = new SolidBrush(color);
+                    raster.DrawString(glyph, brandFont, brush, new PointF(padding, padding), brandFormat);
+                    return (image, width);
+                }).ToArray();
+            brandGlyphs.Add(key, glyphs);
+        }
+        float x = area.X + (area.Width - glyphs.Sum(glyph => glyph.Width)) / 2;
+        float y = area.Y + (area.Height - brandFont.GetHeight(g)) / 2;
+        var saved = g.Save();
+        // Rasterize once, then interpolate coverage between pixels instead of snapping DrawString to its grid.
+        g.InterpolationMode = InterpolationMode.Bilinear;
+        g.PixelOffsetMode = PixelOffsetMode.Half;
+        // Keep the interpolated lower edge above the plan's first ink row.
+        if (hasPlan) g.SetClip(new RectangleF(area.X, area.Y - 3, area.Width, 15), CombineMode.Intersect);
+        for (int index = 0; index < glyphs.Length; index++)
+        {
+            float offset = (hasPlan ? 1.3f : 2f) * (float)-Math.Sin(phase * Math.PI * 2 / 1.8 - index * .65);
+            var image = glyphs[index].Image;
+            g.DrawImage(image, new RectangleF(x - padding, y + offset - padding, image.Width, image.Height),
+                new RectangleF(0, 0, image.Width, image.Height), GraphicsUnit.Pixel);
+            x += glyphs[index].Width;
+        }
+        g.Restore(saved);
+    }
+
     private void DrawService(Graphics g, UsageSource source, int x, int y, Color accent, string name)
     {
         var saved = g.Save();
@@ -594,7 +653,14 @@ internal sealed class MonitorForm : Form
         double cycle = (EffectTime + motion.Offset) / motion.Period;
         double t = Math.Min(1, (cycle - Math.Floor(cycle)) / .82);
         g.TranslateTransform(x + 36, y + 17);
-        if (settings.VisualEffects)
+        if (RefreshSpinActive(source))
+        {
+            double elapsed = Math.Max(0, Environment.TickCount64 - refreshStarts[(int)source.Kind]);
+            // Clockwise full turns have no scale change during a requested refresh.
+            g.RotateTransform((float)(elapsed % 800 / 800 * 360));
+            g.ScaleTransform(.76f, .76f);
+        }
+        else if (settings.VisualEffects)
         {
             float pulse = (float)Math.Sin(t * Math.PI);
             g.RotateTransform((float)(360 * t * t * (3 - 2 * t)) * ((long)cycle % 2 == 0 ? 1 : -1));
@@ -604,7 +670,8 @@ internal sealed class MonitorForm : Form
         g.DrawImage(source.Gemini ? geminiLogo : source.Claude ? claudeLogo : gptLogo, new Rectangle(-13, -13, 26, 26));
         g.Restore(saved);
         string? plan = source.Data?.PlanLabel;
-        DrawText(g, name, brandFont, accent, new RectangleF(x + 3, y + (plan is null ? 31 : 28), 66, 13), true);
+        DrawBrand(g, name, accent, new RectangleF(x + 3, y + (plan is null ? 31 : 28), 66, 13),
+            EffectTime + motion.Offset, plan is not null);
         if (plan is not null) DrawText(g, source.Gemini ? "CLI · " + plan : plan, planFont, TimeColor, new RectangleF(x + 2, y + 38, 68, 10), true);
         if (!source.Enabled || source.Connecting)
         {
@@ -759,7 +826,8 @@ internal sealed class MonitorForm : Form
         var source = Panels().FirstOrDefault(p => p.Bounds.Contains((int)point.X, (int)point.Y)).Source;
         int service = source is null ? -1 : (int)source.Kind;
         int part = button >= 0 ? button + 3 : service;
-        Cursor = button >= 0 ? Cursors.Hand : Cursors.SizeAll;
+        bool overIcon = Panels().Any(panel => ServiceIconBounds(panel.Bounds).Contains(point));
+        Cursor = button >= 0 || overIcon ? Cursors.Hand : Cursors.SizeAll;
         if (part == hoverPart) return;
         hoverPart = part;
         if (button >= 0)
@@ -769,6 +837,7 @@ internal sealed class MonitorForm : Form
         }
         if (source is null || point.X >= ServiceAreaWidth) { tooltip.SetToolTip(this, "메뉴에서 서비스 연결과 창 조작을 관리합니다."); return; }
         string details = source.Name + " · " + source.Status;
+        details += "\n아이콘 클릭: 로그인·사용량 새로고침";
         if (source.Detail is not null) details += "\n" + source.Detail;
         if (source.Data is { } data)
         {
@@ -800,6 +869,12 @@ internal sealed class MonitorForm : Form
             switch (i) { case 0: TogglePin(); break; case 1: ToggleLayout(); break; case 2: ChangeOrangeSize(4); break; case 3: Close(); break; case 4: HideToTray(); break; case 5: ChangeOrangeSize(-4); break; case 6: characterMenu.Show(this, new Point(e.X, e.Y)); break; case 7: ShowConnections(); break; case 8: ToggleTools(); break; }
             return;
         }
+        foreach (var panel in Panels())
+        {
+            if (!ServiceIconBounds(panel.Bounds).Contains(point)) continue;
+            _ = panel.Source.RefreshAsync();
+            return;
+        }
         var screen = PointToScreen(e.Location);
         var position = (IntPtr)unchecked((screen.Y << 16) | (screen.X & 0xffff));
         ReleaseCapture();
@@ -819,6 +894,10 @@ internal sealed class MonitorForm : Form
             foreach (var source in sources) source.Changed -= RefreshDisplay;
             applicationIcon.Dispose(); gptLogo.Dispose(); claudeLogo.Dispose(); geminiLogo.Dispose();
             labelFont.Dispose(); valueFont.Dispose(); timeFont.Dispose(); brandFont.Dispose(); buttonFont.Dispose(); planFont.Dispose();
+            brandFormat.Dispose();
+            foreach (var glyphs in brandGlyphs.Values)
+                foreach (var glyph in glyphs) glyph.Image.Dispose();
+            brandGlyphs.Clear();
         }
         base.Dispose(disposing);
     }

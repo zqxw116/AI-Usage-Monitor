@@ -7,8 +7,8 @@ internal static class PetChecks
         assert(OrangeWalker.Characters.Select(item => item.Resource).SequenceEqual(new[]
         {
             "ChubbyBabyPenguin.gif", "DuckWalkSheet.png",
-            "BabyPenguin.gif", "SquidHatPenguin.gif"
-        }), "기본 펭귄과 오리·기존 원본 펭귄 둘 제공");
+            "BabyPenguin.gif", "SquidHatPenguin.gif", "WalkingCats.gif"
+        }), "기존 펭귄·오리와 새 두 고양이 걷기 제공");
         Directory.CreateDirectory(directory);
         for (int selection = 0; selection < OrangeWalker.Characters.Length; selection++)
         {
@@ -28,9 +28,10 @@ internal static class PetChecks
                     character.FrameAt(starts[frame + 1] / 1000d - 0.0001) == frame,
                     choice.Name + " 프레임 " + frame + " 원본 재생 지연 유지");
             }
-            assert(character.FrameCount == count && count == 8 && character.CycleMilliseconds == starts[^1] &&
+            int expectedCount = choice.Resource == "WalkingCats.gif" ? 12 : 8;
+            assert(character.FrameCount == count && count == expectedCount && character.CycleMilliseconds == starts[^1] &&
                 character.FrameAt(starts[^1] / 1000d) == 0,
-                choice.Name + " 원본 8프레임과 반복 주기 유지");
+                choice.Name + " 원본 " + expectedCount + "프레임과 반복 주기 유지");
             using var first = new Bitmap(160, 100);
             using var later = new Bitmap(160, 100);
             using (var graphics = Graphics.FromImage(first)) character.Draw(graphics, first.Size, 0, 46);
@@ -51,13 +52,13 @@ internal static class PetChecks
             later.Save(Path.Combine(directory, "펫 " + selection + " 동작 프레임.png"));
             assert(transparent > 500 && opaque > 100 && (!sheet || choice.Flip || first.GetPixel(80, 70).A == 255),
                 choice.Name + " 주변 배경 투명화와 몸 내부 보존");
-            using var strip = new Bitmap(160 * 8, 240);
+            using var strip = new Bitmap(160 * count, 240);
             var frameHashes = new HashSet<string>();
             using (var graphics = Graphics.FromImage(strip))
             {
                 graphics.FillRectangle(Brushes.White, 0, 200, strip.Width, 40);
                 using var small = new OrangeWalker(choice, 22);
-                for (int frame = 0; frame < 8; frame++)
+                for (int frame = 0; frame < count; frame++)
                 {
                     using var image = new Bitmap(160, 100);
                     using (var frameGraphics = Graphics.FromImage(image)) character.Draw(frameGraphics, image.Size, starts[frame] / 1000d + 0.001, 46);
@@ -75,7 +76,7 @@ internal static class PetChecks
                     graphics.DrawImageUnscaled(actualSize, frame * 160, 200);
                 }
             }
-            assert(frameHashes.Count == 8, choice.Name + " 여덟 보행 프레임이 각각 다름");
+            assert(frameHashes.Count == count, choice.Name + " 모든 보행 프레임이 각각 다름");
             strip.Save(Path.Combine(directory, "펫 " + selection + " 전체 프레임.png"));
             foreach (var canvas in new[] { new Size(1094, 50), new Size(594, 100) })
             foreach (int delta in new[] { -100, 14, 100 })

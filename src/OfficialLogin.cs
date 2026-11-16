@@ -28,10 +28,43 @@ internal sealed class OfficialLogin : IDisposable
         ? "https://code.claude.com/docs/en/setup"
         : "https://developers.openai.com/codex/cli/");
 
-    internal static LoginCommand? FindCommand(bool claude) => FindCommand(claude,
-        (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator),
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData));
+    internal static LoginCommand? FindCommand(bool claude)
+    {
+        // Desktop ships its own Code binary; a separate npm installation may be older.
+        if (claude && FindDesktopClaudeCommand(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)) is { } desktop)
+            return desktop;
+        return FindCommand(claude, (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator),
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData));
+    }
+
+    internal static LoginCommand? FindDesktopClaudeCommand(string local)
+    {
+        try
+        {
+            string root = Path.Combine(local, "Claude-Data");
+            if (!Directory.Exists(root)) return null;
+            var profiles = Directory.EnumerateDirectories(root, "claude_*").Append(root);
+            var candidates = new List<(Version Version, string Path)>();
+            foreach (string profile in profiles)
+            {
+                string code = Path.Combine(profile, "claude-code");
+                if (!Directory.Exists(code)) continue;
+                foreach (string directory in Directory.EnumerateDirectories(code))
+                {
+                    if (!Version.TryParse(Path.GetFileName(directory), out var version) || version < new Version(2, 1, 317)) continue;
+                    foreach (string build in Directory.EnumerateDirectories(directory))
+                    {
+                        string executable = Path.Combine(build, "claude.exe");
+                        if (File.Exists(executable)) candidates.Add((version, executable));
+                    }
+                }
+            }
+            string? selected = candidates.OrderByDescending(candidate => candidate.Version).Select(candidate => candidate.Path).FirstOrDefault();
+            return selected is null ? null : new(selected, new[] { "auth", "login" });
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Security.SecurityException) { return null; }
+    }
 
     private static LoginCommand? FindGeminiCommand()
     {

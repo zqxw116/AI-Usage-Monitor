@@ -52,9 +52,11 @@ internal static class ServiceConnectionChecks
         assert(handler.Calls == 2 && !source.Failed && source.Status == connectedStatus, "로그인 완료 후 조회 복구 및 중복 종료 처리로 상태 덮어쓰기 방지");
 
         var pending = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var arrived = new ManualResetEventSlim();
         bool cancelled = false;
-        handler.Reply = token => { token.Register(() => cancelled = true); return pending.Task; };
+        handler.Reply = token => { token.Register(() => cancelled = true); arrived.Set(); return pending.Task; };
         Task request = source.TickAsync(true);
+        assert(arrived.Wait(TimeSpan.FromSeconds(3)), "비동기 인증 이후 합성 HTTP 요청 도착 확인");
         source.SetEnabled(false);
         source.SetEnabled(true);
         pending.SetResult(Response());

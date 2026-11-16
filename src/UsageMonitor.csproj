@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>AI Usage Monitor</AssemblyName>
     <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
-    <Version>1.3.2</Version>
+    <Version>1.3.7</Version>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
@@ -15,7 +15,9 @@
     <DebugType>none</DebugType>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Remove="ClaudeDesktopAuth.cs;ClaudeConnectionChecks.cs" />
+    <InternalsVisibleTo Include="RefreshChecks" />
+    <InternalsVisibleTo Include="MotionChecks" />
+    <Compile Remove="DistributionClaudeAuth.cs;ClaudeConnectionChecks.cs" />
     <EmbeddedResource Include="Assets\AppIcon.ico" LogicalName="AppIcon.ico" />
     <EmbeddedResource Include="Assets\Gpt.png" LogicalName="GptLogo.png" />
     <EmbeddedResource Include="Assets\Claude.png" LogicalName="ClaudeLogo.png" />
@@ -24,5 +26,6 @@
     <EmbeddedResource Include="Assets\ChubbyBabyPenguin.gif" LogicalName="ChubbyBabyPenguin.gif" />
     <EmbeddedResource Include="Assets\BabyPenguin.gif" LogicalName="BabyPenguin.gif" />
     <EmbeddedResource Include="Assets\SquidHatPenguin.gif" LogicalName="SquidHatPenguin.gif" />
+    <EmbeddedResource Include="Assets\WalkingCats.gif" LogicalName="WalkingCats.gif" />
   </ItemGroup>
 </Project>

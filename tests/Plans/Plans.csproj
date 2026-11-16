@@ -10,5 +10,7 @@
     <Compile Include="../../src/Usage.cs" Link="Usage.cs" />
     <Compile Include="../../src/GeminiApi.cs" Link="GeminiApi.cs" />
     <Compile Include="../../src/DistributionClaudeAuth.cs" Link="DistributionClaudeAuth.cs" />
+    <Compile Include="../../src/ClaudeAuthRenewal.cs" Link="ClaudeAuthRenewal.cs" />
+    <Compile Include="../../src/OfficialLogin.cs" Link="OfficialLogin.cs" />
   </ItemGroup>
 </Project>

@@ -1,9 +1,24 @@
 using System.Diagnostics;
+using System.Drawing.Drawing2D;
 
 namespace UsageMonitor;
 
 internal sealed class ConnectionForm : Form
 {
+    private sealed class RefreshButton : Button
+    {
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            float x = Width / 2f, y = Height / 2f;
+            using var pen = new Pen(Enabled ? Color.FromArgb(230, 235, 241) : Color.FromArgb(144, 157, 170), 1.8f)
+                { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+            g.DrawArc(pen, x - 8, y - 8, 16, 16, 45, 285);
+            g.DrawLines(pen, new[] { new PointF(x + 7, y - 10), new PointF(x + 7, y - 4), new PointF(x + 1, y - 4) });
+        }
+    }
     private sealed class ConnectButton : Button
     {
         protected override void OnPaint(PaintEventArgs e)
@@ -22,6 +37,7 @@ internal sealed class ConnectionForm : Form
     private readonly CheckBox[] toggles;
     private readonly Label[] statuses;
     private readonly Button[] connectButtons;
+    private readonly Button[] refreshButtons;
     private readonly Action<UsageSource, bool> setEnabled;
     private readonly Label outcome = new() { AutoSize = false, Dock = DockStyle.Fill };
     private readonly LinkLabel reopen = new() { Text = "로그인 브라우저 다시 열기", AutoSize = true, Visible = false };
@@ -49,12 +65,13 @@ internal sealed class ConnectionForm : Form
         toggles = new CheckBox[this.sources.Length];
         statuses = new Label[this.sources.Length];
         connectButtons = new Button[this.sources.Length];
+        refreshButtons = new Button[this.sources.Length];
         this.setEnabled = setEnabled;
         Text = "서비스 연결 관리";
         Font = bodyFont;
         BackColor = Color.FromArgb(32, 38, 46);
         ForeColor = Color.FromArgb(230, 235, 241);
-        ClientSize = new Size(600, 264 + this.sources.Length * 62);
+        ClientSize = new Size(690, 282 + this.sources.Length * 62);
         MinimumSize = ClientSize;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -63,18 +80,19 @@ internal sealed class ConnectionForm : Form
         StartPosition = FormStartPosition.CenterParent;
         AutoScaleMode = AutoScaleMode.Dpi;
 
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(18), ColumnCount = 3, RowCount = this.sources.Length + 4 };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(18), ColumnCount = 4, RowCount = this.sources.Length + 4 };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 115));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 168));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 46));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 43));
         foreach (var _ in this.sources) layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 92));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 110));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
         var intro = new Label { Text = "켜 둔 서비스만 조회합니다. 앱·CLI를 사용 중일 필요는 없습니다.", Dock = DockStyle.Fill, AutoSize = false };
         layout.Controls.Add(intro, 0, 0);
-        layout.SetColumnSpan(intro, 3);
+        layout.SetColumnSpan(intro, 4);
         for (int index = 0; index < this.sources.Length; index++)
         {
             int selected = index;
@@ -86,18 +104,21 @@ internal sealed class ConnectionForm : Form
                 this.setEnabled(source, toggles[selected].Checked);
                 RefreshRows();
             };
-            statuses[index] = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true, Padding = new Padding(0, 0, 6, 0) };
+            statuses[index] = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(0, 0, 6, 0) };
             connectButtons[index] = new ConnectButton { Text = "브라우저 로그인", Dock = DockStyle.Fill, Margin = new Padding(0, 12, 0, 12), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(52, 65, 78), UseVisualStyleBackColor = false };
             connectButtons[index].Click += async (_, _) => await ConnectAsync(source);
+            refreshButtons[index] = new RefreshButton { AccessibleName = source.Name + " 새로고침", AccessibleDescription = "저장된 인증과 사용량을 다시 확인합니다.", Dock = DockStyle.Fill, Margin = new Padding(6, 12, 0, 12), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(52, 65, 78), UseVisualStyleBackColor = false };
+            refreshButtons[index].Click += async (_, _) => await source.RefreshAsync();
             layout.Controls.Add(toggles[index], 0, index + 1);
             layout.Controls.Add(statuses[index], 1, index + 1);
             layout.Controls.Add(connectButtons[index], 2, index + 1);
+            layout.Controls.Add(refreshButtons[index], 3, index + 1);
             source.Changed += RefreshRows;
         }
         int helpRow = this.sources.Length + 1;
-        var help = new Label { Text = "브라우저 로그인에는 해당 공식 CLI 설치가 필요합니다.\n로그인 때만 실행하며, 완료 후 켜 둘 필요는 없습니다.\n선택한 계정은 해당 CLI의 로그인에도 적용됩니다.\nGemini는 실험적이며 CLI 한도를 표시합니다.", Dock = DockStyle.Fill, AutoSize = false, ForeColor = Color.FromArgb(207, 217, 228) };
+        var help = new Label { Text = "회전 화살표는 저장된 로그인과 서버 사용량을 다시 확인합니다.\nClaude는 데스크톱 앱 로그인을 우선 사용하고, 없으면 Code 로그인을 확인합니다.\n앱이 갱신한 인증은 다음 조회에 다시 읽습니다. 정상 연결은 60초 간격으로 조회합니다.\n조회 제한이 있으면 표시된 재시도 시간까지 기다립니다. 브라우저 로그인은 수동 연결입니다.\nGemini는 실험적이며 CLI 한도를 표시합니다.", Dock = DockStyle.Fill, AutoSize = false, ForeColor = Color.FromArgb(207, 217, 228) };
         layout.Controls.Add(help, 0, helpRow);
-        layout.SetColumnSpan(help, 3);
+        layout.SetColumnSpan(help, 4);
         layout.Controls.Add(outcome, 0, helpRow + 1);
         layout.SetColumnSpan(outcome, 2);
         cancel.Dock = DockStyle.Fill;
@@ -106,6 +127,7 @@ internal sealed class ConnectionForm : Form
         cancel.UseVisualStyleBackColor = false;
         cancel.Margin = new Padding(0, 4, 0, 10);
         layout.Controls.Add(cancel, 2, helpRow + 1);
+        layout.SetColumnSpan(cancel, 2);
         var footer = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
         reopen.LinkColor = Color.FromArgb(125, 209, 238);
         reopen.ActiveLinkColor = Color.White;
@@ -121,7 +143,7 @@ internal sealed class ConnectionForm : Form
         update.Click += (_, _) => UpdateRequested?.Invoke(this, EventArgs.Empty);
         footer.Controls.Add(update);
         layout.Controls.Add(footer, 0, helpRow + 2);
-        layout.SetColumnSpan(footer, 3);
+        layout.SetColumnSpan(footer, 4);
         Controls.Add(layout);
         RefreshRows();
     }
@@ -134,8 +156,9 @@ internal sealed class ConnectionForm : Form
         {
             var source = sources[index];
             toggles[index].Checked = source.Enabled;
-            connectButtons[index].Enabled = loginCancellation is null && source.Enabled;
-            statuses[index].Text = (source.Gemini ? "실험 · " : "") + source.Status;
+            connectButtons[index].Enabled = loginCancellation is null && source.Enabled && !source.Refreshing;
+            refreshButtons[index].Enabled = loginCancellation is null && source.Enabled && !source.Refreshing;
+            statuses[index].Text = (source.Gemini ? "실험 · " : "") + (source.Refreshing ? "로그인·사용량 확인 중…" : source.Status);
         }
         updating = false;
         if (connectingSource is { Enabled: false }) loginCancellation?.Cancel();

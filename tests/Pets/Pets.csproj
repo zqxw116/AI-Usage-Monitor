@@ -14,5 +14,6 @@
     <EmbeddedResource Include="../../src/Assets/ChubbyBabyPenguin.gif" LogicalName="ChubbyBabyPenguin.gif" />
     <EmbeddedResource Include="../../src/Assets/BabyPenguin.gif" LogicalName="BabyPenguin.gif" />
     <EmbeddedResource Include="../../src/Assets/SquidHatPenguin.gif" LogicalName="SquidHatPenguin.gif" />
+    <EmbeddedResource Include="../../src/Assets/WalkingCats.gif" LogicalName="WalkingCats.gif" />
   </ItemGroup>
 </Project>

@@ -132,6 +132,7 @@ internal sealed class UsageSource : IDisposable
     private readonly HttpClient http;
     private readonly Func<ClaudeDesktopCredential?> desktopAuth;
     private readonly bool desktopOnly;
+    private readonly Func<string, CancellationToken, Task> renewClaude;
     private readonly List<FileSystemWatcher> watchers = new();
     private readonly string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     private readonly string codexHome;
@@ -141,8 +142,12 @@ internal sealed class UsageSource : IDisposable
     private CancellationTokenSource? currentRequest;
     private int activity;
     private bool fetching;
+    private TaskCompletionSource? fetchFinished;
+    private Task? refreshTask;
+    public bool Refreshing { get; private set; }
     private bool desktopConnection;
     private DateTimeOffset nextRequest;
+    private DateTimeOffset rateLimitedUntil;
     private DateTimeOffset lastRequest;
     private string? identity;
     private string? claudeCache;
@@ -182,6 +187,36 @@ internal sealed class UsageSource : IDisposable
         Interlocked.Exchange(ref activity, 1);
     }
 
+    internal Task RefreshAsync()
+    {
+        if (Refreshing) return refreshTask ?? Task.CompletedTask;
+        if (!Enabled || Connecting || lifetime.IsCancellationRequested) return Task.CompletedTask;
+        Refreshing = true;
+        refreshTask = RefreshCoreAsync();
+        return refreshTask;
+    }
+
+    private async Task RefreshCoreAsync()
+    {
+        // Yield before notifying controls so all callers share the same in-flight task.
+        await Task.Yield();
+        try
+        {
+            if (!lifetime.IsCancellationRequested) Changed?.Invoke();
+            if (fetchFinished is { } pending) await pending.Task;
+            if (!Enabled || Connecting || lifetime.IsCancellationRequested) return;
+            Status = "로그인·사용량 확인 중";
+            Changed?.Invoke();
+            await TickAsync(true);
+            if (!Failed && Data is not null) Status = "연결 확인됨 · 방금 갱신";
+        }
+        finally
+        {
+            Refreshing = false;
+            if (!lifetime.IsCancellationRequested) Changed?.Invoke();
+        }
+    }
+
     internal void SetConnecting(bool connecting)
     {
         if (Connecting == connecting) return;
@@ -200,16 +235,19 @@ internal sealed class UsageSource : IDisposable
     }
 
     public UsageSource(bool claude, HttpClient? httpClient = null, string? claudeDirectory = null,
-        Func<ClaudeDesktopCredential?>? desktopReader = null, bool desktopOnly = false)
-        : this(claude ? ServiceKind.Claude : ServiceKind.Codex, httpClient, claudeDirectory, desktopReader, desktopOnly) { }
+        Func<ClaudeDesktopCredential?>? desktopReader = null, bool desktopOnly = false,
+        Func<string, CancellationToken, Task>? claudeRenewal = null)
+        : this(claude ? ServiceKind.Claude : ServiceKind.Codex, httpClient, claudeDirectory, desktopReader, desktopOnly, claudeRenewal) { }
 
     public UsageSource(ServiceKind kind, HttpClient? httpClient = null, string? claudeDirectory = null,
-        Func<ClaudeDesktopCredential?>? desktopReader = null, bool desktopOnly = false)
+        Func<ClaudeDesktopCredential?>? desktopReader = null, bool desktopOnly = false,
+        Func<string, CancellationToken, Task>? claudeRenewal = null)
     {
         Kind = kind;
         http = httpClient ?? Client;
         desktopAuth = desktopReader ?? ClaudeDesktopAuth.Read;
         this.desktopOnly = desktopOnly;
+        renewClaude = claudeRenewal ?? ClaudeAuthRenewal.RenewAsync;
         cancellation = lifetime.Token;
         codexHome = Environment.GetEnvironmentVariable("CODEX_HOME") ?? Path.Combine(home, ".codex");
         claudeHome = claudeDirectory ?? Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR") ?? Path.Combine(home, ".claude");
@@ -234,6 +272,7 @@ internal sealed class UsageSource : IDisposable
     }
 
     private sealed class AccessException(string message) : InvalidOperationException(message) { }
+    private sealed class RateLimitException(string message) : InvalidOperationException(message) { }
 
     private async Task<JsonDocument> SendAsync(HttpRequestMessage request)
     {
@@ -245,7 +284,8 @@ internal sealed class UsageSource : IDisposable
             var retry = response.Headers.RetryAfter;
             var delay = retry?.Delta ?? (retry?.Date is { } date ? date - DateTimeOffset.UtcNow : TimeSpan.FromMinutes(2));
             nextRequest = DateTimeOffset.UtcNow.AddSeconds(Math.Clamp(delay.TotalSeconds, 60, 3600));
-            throw new InvalidOperationException(Claude ? $"조회 제한 · {nextRequest.ToLocalTime():HH:mm:ss} 재시도" : "조회 제한 · 자동 재시도");
+            rateLimitedUntil = nextRequest;
+            throw new RateLimitException(Claude ? $"조회 제한 · {nextRequest.ToLocalTime():HH:mm:ss} 재시도" : "조회 제한 · 자동 재시도");
         }
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
         {
@@ -268,8 +308,9 @@ internal sealed class UsageSource : IDisposable
     {
         InvalidOperationException? desktopFailure = null;
         ClaudeDesktopCredential? desktop = null;
-        try { desktop = desktopAuth(); }
+        try { desktop = await Task.Run(desktopAuth, cancellation); }
         catch (InvalidOperationException error) { desktopFailure = error; }
+        cancellation.ThrowIfCancellationRequested();
         if (desktop is not null)
         {
             desktopConnection = true;
@@ -290,13 +331,33 @@ internal sealed class UsageSource : IDisposable
         string? token = null;
         string? planLabel = null;
         bool codeReadFailed = false;
-        try
+        string? renewalNotice = null;
+        bool expired = false, canRenew = false, expiryKnown = false;
+        void ReadCodeLogin()
         {
             using var auth = ReadJson(Path.Combine(claudeHome, ".credentials.json"));
             var tokens = UsageParser.Property(auth.RootElement, "claudeAiOauth");
             planLabel = UsageParser.ClaudePlan(tokens);
             var node = UsageParser.Property(tokens, "accessToken");
-            if (node.ValueKind == JsonValueKind.String) token = node.GetString();
+            token = node.ValueKind == JsonValueKind.String ? node.GetString() : null;
+            var expiry = UsageParser.Property(tokens, "expiresAt");
+            expiryKnown = expiry.ValueKind == JsonValueKind.Number && expiry.TryGetInt64(out _);
+            expired = expiryKnown && expiry.GetInt64() <= DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var refresh = UsageParser.Property(tokens, "refreshToken");
+            canRenew = refresh.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(refresh.GetString());
+        }
+        try
+        {
+            ReadCodeLogin();
+            if (expired && canRenew)
+            {
+                nextRequest = DateTimeOffset.UtcNow.AddMinutes(1);
+                try { await renewClaude(claudeHome, cancellation); }
+                catch (InvalidOperationException error) { renewalNotice = error.Message; }
+                ReadCodeLogin();
+            }
+            // Local expiry metadata can lag behind the official client's login state.
+            // Only the usage server can confirm whether this access token is accepted.
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException)
         { codeReadFailed = error is not FileNotFoundException and not DirectoryNotFoundException; }
@@ -314,12 +375,14 @@ internal sealed class UsageSource : IDisposable
                 Data = null;
                 claudeCache = null;
                 if (desktopFailure is not null && desktopFailure is not LoginException) throw desktopFailure;
+                throw new LoginException(renewalNotice ?? (expired ? "Claude Code 인증 만료 · 브라우저 로그인 필요" :
+                    "Claude Code 인증 확인 필요 · 브라우저 로그인"));
             }
         }
         desktopConnection = true;
         if (desktopFailure is not null) throw desktopFailure;
         if (codeReadFailed) throw new InvalidOperationException("Claude Code 인증 파일 읽기 실패 · 자동 재시도");
-        throw new LoginException("Claude 앱 또는 Code 로그인 필요");
+        throw new LoginException("Claude Code 로그인 필요 · 앱 로그인과 별도");
     }
 
     private async Task ReadClaudeDesktopAsync(ClaudeDesktopCredential desktop)
@@ -358,7 +421,7 @@ internal sealed class UsageSource : IDisposable
         claudeCache = null;
         using var usageRequest = WebRequest("/api/organizations/" + organization + "/usage");
         using var usage = await SendAsync(usageRequest);
-        SetClaudeData(usage.RootElement, "자동 갱신 · 앱", 300, planLabel);
+        SetClaudeData(usage.RootElement, "자동 갱신 · 앱", 60, planLabel);
     }
 
     private void SetIdentity(string token)
@@ -386,6 +449,7 @@ internal sealed class UsageSource : IDisposable
         var snapshot = UsageParser.Parse(root, true, DateTimeOffset.UtcNow);
         if (snapshot.FiveHour is null && snapshot.Weekly is null) throw new InvalidOperationException("한도 정보 없음");
         Data = snapshot with { PlanLabel = snapshot.PlanLabel ?? planLabel };
+        Detail = null;
         Failed = false;
         Status = status;
         nextRequest = DateTimeOffset.UtcNow.AddSeconds(pollSeconds);
@@ -440,6 +504,24 @@ internal sealed class UsageSource : IDisposable
     public async Task TickAsync(bool force = false)
     {
         if (!Enabled || Connecting || fetching || lifetime.IsCancellationRequested) return;
+        if (DateTimeOffset.UtcNow < rateLimitedUntil)
+        {
+            if (force && Claude && !desktopConnection && identity is not null)
+            {
+                try
+                {
+                    using var auth = ReadJson(Path.Combine(claudeHome, ".credentials.json"));
+                    var token = UsageParser.Property(UsageParser.Property(auth.RootElement, "claudeAiOauth"), "accessToken");
+                    if (token.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(token.GetString())) SetIdentity(token.GetString()!);
+                    else Data = null;
+                }
+                catch (FileNotFoundException) { Data = null; }
+                catch (DirectoryNotFoundException) { Data = null; }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException) { }
+            }
+            Status = $"조회 제한 · {rateLimitedUntil.ToLocalTime():HH:mm:ss} 재시도";
+            return;
+        }
         ReadClaudeCache();
         var now = DateTimeOffset.UtcNow;
         // Multiple transcript writes are combined; usage endpoints are never called for every token.
@@ -447,6 +529,8 @@ internal sealed class UsageSource : IDisposable
         if (!force && !RequestDue(Claude && desktopConnection, active, now, nextRequest, lastRequest)) return;
         Interlocked.Exchange(ref activity, 0);
         fetching = true;
+        var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fetchFinished = finished;
         using var requestLifetime = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
         currentRequest = requestLifetime;
         cancellation = requestLifetime.Token;
@@ -497,6 +581,7 @@ internal sealed class UsageSource : IDisposable
                 var retry = response.Headers.RetryAfter;
                 var delay = retry?.Delta ?? (retry?.Date is { } retryDate ? retryDate - DateTimeOffset.UtcNow : TimeSpan.FromMinutes(2));
                 nextRequest = DateTimeOffset.UtcNow.AddSeconds(Math.Clamp(delay.TotalSeconds, 60, 3600));
+                rateLimitedUntil = nextRequest;
                 throw new InvalidOperationException("조회 제한 · 자동 재시도");
             }
             if (response.StatusCode == HttpStatusCode.Unauthorized || response.StatusCode == HttpStatusCode.Forbidden)
@@ -541,6 +626,8 @@ internal sealed class UsageSource : IDisposable
         {
             fetching = false;
             currentRequest = null;
+            fetchFinished = null;
+            finished.TrySetResult();
             if (!lifetime.IsCancellationRequested) Changed?.Invoke();
         }
     }

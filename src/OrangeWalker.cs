@@ -15,7 +15,8 @@ internal sealed class OrangeWalker : IDisposable
         new("통통한 아기 펭귄 · 뒤뚱걷기", "ChubbyBabyPenguin.gif", RemoveBackground: true),
         new("오리 · 걷기", "DuckWalkSheet.png", true, 4, 2),
         new("아기 펭귄 · 원본", "BabyPenguin.gif", RemoveBackground: true),
-        new("오징어 모자 펭귄 · 원본", "SquidHatPenguin.gif", RemoveBackground: true)
+        new("오징어 모자 펭귄 · 원본", "SquidHatPenguin.gif", RemoveBackground: true),
+        new("두 고양이 · 걷기", "WalkingCats.gif")
     };
     private readonly Bitmap[] frames;
     private readonly int[] frameEnds;
