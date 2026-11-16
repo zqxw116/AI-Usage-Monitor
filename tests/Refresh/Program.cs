@@ -13,6 +13,14 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--info-preview")
+        {
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            Directory.CreateDirectory(args[1]);
+            InfoViewChecks.Run(args[1], Check);
+            return failed == 0 ? 0 : 1;
+        }
         if (args.SequenceEqual(new[] { "--claude-desktop-watch" }))
             return WatchDesktopAsync().GetAwaiter().GetResult();
         if (args.SequenceEqual(new[] { "--claude-desktop-diagnostic" }))
@@ -25,7 +33,7 @@ internal static class Program
                 FiveHourRemaining = source.Data?.FiveHour?.Remaining, WeeklyRemaining = source.Data?.Weekly?.Remaining,
                 HasFiveHourReset = source.Data?.FiveHour?.Reset is not null,
                 HasWeeklyReset = source.Data?.Weekly?.Reset is not null,
-                source.Data?.Retrieved
+                source.Data?.Retrieved, source.Data?.PlanLabel
             }));
             return 0;
         }
@@ -52,6 +60,9 @@ internal static class Program
             CheckBundledCommand(directory);
             RenewalChecks.RunAsync(Check).GetAwaiter().GetResult();
             CheckRefreshControls(directory);
+            PremiumPaletteChecks.Run(Check);
+            InfoViewChecks.Run(directory, Check);
+            UpdateNoticeViewChecks.Run(directory, Check);
             ResponsivenessChecks.Run(Check);
         }
         finally { Directory.Delete(directory, true); }

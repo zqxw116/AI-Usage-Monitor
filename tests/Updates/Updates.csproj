@@ -8,5 +8,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../src/AppUpdater.cs" Link="AppUpdater.cs" />
+    <Compile Include="../../src/UpdateNoticeStore.cs" Link="UpdateNoticeStore.cs" />
   </ItemGroup>
 </Project>

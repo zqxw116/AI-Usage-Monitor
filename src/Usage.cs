@@ -61,6 +61,22 @@ internal static class UsageParser
         };
     }
 
+    internal static string? ClaudeOrganizationPlan(JsonElement organization)
+    {
+        string? plan = ClaudeResponsePlan(organization);
+        if (plan is not null) return plan;
+        var type = Property(organization, "organization_type");
+        if (type.ValueKind != JsonValueKind.String) return null;
+        return type.GetString() switch
+        {
+            "claude_pro" => "Pro",
+            "claude_max" => "Max",
+            "claude_team" => "Team",
+            "claude_enterprise" => "Enterprise",
+            _ => null
+        };
+    }
+
     public static JsonElement Property(JsonElement item, string name) =>
         item.ValueKind == JsonValueKind.Object && item.TryGetProperty(name, out var value) ? value : default;
 
@@ -151,6 +167,9 @@ internal sealed class UsageSource : IDisposable
     private DateTimeOffset lastRequest;
     private string? identity;
     private string? claudeCache;
+    private string? claudePlanLabel;
+    private string? claudePlanDetail;
+    private bool claudePlanChecked;
     public ServiceKind Kind { get; }
     public bool Claude => Kind == ServiceKind.Claude;
     public bool Gemini => Kind == ServiceKind.Gemini;
@@ -207,6 +226,7 @@ internal sealed class UsageSource : IDisposable
             if (!Enabled || Connecting || lifetime.IsCancellationRequested) return;
             Status = "로그인·사용량 확인 중";
             Changed?.Invoke();
+            if (Claude && claudePlanLabel is null) claudePlanChecked = false;
             await TickAsync(true);
             if (!Failed && Data is not null) Status = "연결 확인됨 · 방금 갱신";
         }
@@ -391,7 +411,7 @@ internal sealed class UsageSource : IDisposable
         {
             try
             {
-                await ReadClaudeBearerAsync(desktop.Bearer, "자동 갱신 · 앱");
+                await ReadClaudeBearerAsync(desktop.Bearer, "자동 갱신 · 앱", organization: desktop.Organization);
                 return;
             }
             catch (LoginException) when (!string.IsNullOrWhiteSpace(desktop.SessionKey)) { Data = null; }
@@ -400,6 +420,7 @@ internal sealed class UsageSource : IDisposable
         if (string.IsNullOrWhiteSpace(desktop.SessionKey)) throw new LoginException("Claude 앱 로그인 확인 필요");
         var organization = desktop.Organization;
         string? planLabel = null;
+        bool organizationRead = false;
         HttpRequestMessage WebRequest(string url)
         {
             var request = new HttpRequestMessage(HttpMethod.Get, "https://claude.ai" + url);
@@ -414,7 +435,8 @@ internal sealed class UsageSource : IDisposable
                 throw new LoginException("Claude 앱에서 사용할 조직 선택 필요");
             var id = UsageParser.Property(json.RootElement[0], "uuid");
             if (id.ValueKind == JsonValueKind.String) organization = id.GetString();
-            planLabel = UsageParser.ClaudeResponsePlan(json.RootElement[0]);
+            planLabel = UsageParser.ClaudeOrganizationPlan(json.RootElement[0]);
+            organizationRead = true;
         }
         if (!Guid.TryParse(organization, out _)) throw new LoginException("Claude 앱 조직 확인 필요");
         SetIdentity(desktop.SessionKey + ":" + organization);
@@ -422,18 +444,44 @@ internal sealed class UsageSource : IDisposable
         using var usageRequest = WebRequest("/api/organizations/" + organization + "/usage");
         using var usage = await SendAsync(usageRequest);
         SetClaudeData(usage.RootElement, "자동 갱신 · 앱", 60, planLabel);
+        if (!claudePlanChecked)
+        {
+            if (organizationRead)
+            {
+                claudePlanChecked = true;
+                Detail = claudePlanDetail = "Claude 요금제 정보 없음";
+            }
+            else
+            {
+                using var request = WebRequest("/api/organizations");
+                await ReadClaudePlanAsync(request, root =>
+                {
+                    if (root.ValueKind != JsonValueKind.Array) return null;
+                    var matches = root.EnumerateArray().Where(item =>
+                        UsageParser.Property(item, "uuid") is { ValueKind: JsonValueKind.String } id &&
+                        string.Equals(id.GetString(), organization, StringComparison.OrdinalIgnoreCase)).ToArray();
+                    return matches.Length == 1 ? UsageParser.ClaudeOrganizationPlan(matches[0]) : null;
+                });
+            }
+        }
     }
 
     private void SetIdentity(string token)
     {
         string current = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)));
-        if (identity is not null && identity != current) Data = null;
+        if (identity != current)
+        {
+            Data = null;
+            claudePlanLabel = null;
+            claudePlanDetail = null;
+            claudePlanChecked = false;
+        }
         identity = current;
     }
 
-    private async Task ReadClaudeBearerAsync(string token, string status, string? planLabel = null)
+    private async Task ReadClaudeBearerAsync(string token, string status, string? planLabel = null, string? organization = null)
     {
-        SetIdentity(token);
+        SetIdentity(token + (organization is null ? "" : ":" + organization));
         claudeCache = status.EndsWith("Code") ? Path.Combine(home, ".cache", "claude-dashboard", "cache-" + identity![..16].ToLowerInvariant() + ".json") : null;
         ReadClaudeCache();
         using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.anthropic.com/api/oauth/usage");
@@ -441,6 +489,55 @@ internal sealed class UsageSource : IDisposable
         request.Headers.Add("anthropic-beta", "oauth-2025-04-20");
         using var json = await SendAsync(request);
         SetClaudeData(json.RootElement, status, planLabel: planLabel);
+        if (status.EndsWith("앱") && !claudePlanChecked)
+        {
+            if (!Guid.TryParse(organization, out _))
+            {
+                claudePlanChecked = true;
+                Detail = claudePlanDetail = "Claude 요금제 조직 확인 필요";
+                return;
+            }
+            using var profile = new HttpRequestMessage(HttpMethod.Get, "https://api.anthropic.com/api/oauth/profile");
+            profile.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            profile.Headers.Add("anthropic-beta", "oauth-2025-04-20");
+            await ReadClaudePlanAsync(profile, root =>
+            {
+                var org = UsageParser.Property(root, "organization");
+                var id = UsageParser.Property(org, "uuid");
+                return id.ValueKind == JsonValueKind.String && string.Equals(id.GetString(), organization, StringComparison.OrdinalIgnoreCase)
+                    ? UsageParser.ClaudeOrganizationPlan(org) : null;
+            });
+        }
+    }
+
+    private async Task ReadClaudePlanAsync(HttpRequestMessage request, Func<JsonElement, string?> parse)
+    {
+        string? plan = null;
+        string detail = "Claude 요금제 정보 확인 불가";
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        timeout.CancelAfter(TimeSpan.FromSeconds(5));
+        try
+        {
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            request.Headers.UserAgent.ParseAdd("AIUsageMonitor/1.0.0");
+            using var response = await http.SendAsync(request, timeout.Token);
+            if (response.IsSuccessStatusCode)
+            {
+                using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(timeout.Token));
+                plan = parse(json.RootElement);
+            }
+            else detail = $"Claude 요금제 조회 실패 ({(int)response.StatusCode}) · 사용량은 정상";
+        }
+        catch (Exception error) when (error is HttpRequestException or IOException or JsonException or OperationCanceledException)
+        {
+            cancellation.ThrowIfCancellationRequested();
+            detail = "Claude 요금제 조회 실패 · 사용량은 정상";
+        }
+        cancellation.ThrowIfCancellationRequested();
+        claudePlanChecked = true;
+        claudePlanLabel = plan;
+        Detail = claudePlanDetail = plan is null ? detail : null;
+        if (Data is not null) Data = Data with { PlanLabel = plan };
     }
 
     private void SetClaudeData(JsonElement root, string status, int pollSeconds = 60, string? planLabel = null)
@@ -448,8 +545,14 @@ internal sealed class UsageSource : IDisposable
         cancellation.ThrowIfCancellationRequested();
         var snapshot = UsageParser.Parse(root, true, DateTimeOffset.UtcNow);
         if (snapshot.FiveHour is null && snapshot.Weekly is null) throw new InvalidOperationException("한도 정보 없음");
-        Data = snapshot with { PlanLabel = snapshot.PlanLabel ?? planLabel };
-        Detail = null;
+        if ((snapshot.PlanLabel ?? planLabel) is { } knownPlan)
+        {
+            claudePlanLabel = knownPlan;
+            claudePlanChecked = true;
+            claudePlanDetail = null;
+        }
+        Data = snapshot with { PlanLabel = claudePlanLabel };
+        Detail = claudePlanDetail;
         Failed = false;
         Status = status;
         nextRequest = DateTimeOffset.UtcNow.AddSeconds(pollSeconds);

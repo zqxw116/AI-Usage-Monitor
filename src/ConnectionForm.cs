@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing.Drawing2D;
+using System.Runtime.InteropServices;
 
 namespace UsageMonitor;
 
@@ -25,9 +26,9 @@ internal sealed class ConnectionForm : Form
         {
             if (Enabled) { base.OnPaint(e); return; }
             e.Graphics.Clear(BackColor);
-            using var border = new Pen(Color.FromArgb(108, 127, 143));
+            using var border = new Pen(Color.FromArgb(80, 80, 80));
             e.Graphics.DrawRectangle(border, 0, 0, Width - 1, Height - 1);
-            TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, Color.FromArgb(185, 197, 209),
+            TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, Color.FromArgb(180, 180, 180),
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
         }
     }
@@ -38,6 +39,15 @@ internal sealed class ConnectionForm : Form
     private readonly Label[] statuses;
     private readonly Button[] connectButtons;
     private readonly Button[] refreshButtons;
+    private readonly TableLayoutPanel layout;
+    private readonly RowStyle noticeRow = new(SizeType.Absolute, 0);
+    private readonly Panel noticePanel = new() { Dock = DockStyle.Fill, Padding = new Padding(10), BackColor = Color.FromArgb(30, 30, 30), Visible = false };
+    private readonly Label noticeTitle = new() { Dock = DockStyle.Top, Height = 24 };
+    private readonly RichTextBox noticeContent = new()
+    {
+        Dock = DockStyle.Fill, ReadOnly = true, DetectUrls = false, BorderStyle = BorderStyle.None,
+        ScrollBars = RichTextBoxScrollBars.Vertical, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.FromArgb(224, 224, 224)
+    };
     private readonly Action<UsageSource, bool> setEnabled;
     private readonly Label outcome = new() { AutoSize = false, Dock = DockStyle.Fill };
     private readonly LinkLabel reopen = new() { Text = "로그인 브라우저 다시 열기", AutoSize = true, Visible = false };
@@ -56,6 +66,29 @@ internal sealed class ConnectionForm : Form
         update.Text = status ?? "업데이트 확인";
     }
 
+    internal void SetReleaseNotice(UpdateNotice? notice)
+    {
+        int height = notice is null ? 0 : (int)Math.Round(190 * DeviceDpi / 96f);
+        int difference = height - (int)noticeRow.Height;
+        noticeRow.Height = height;
+        noticePanel.Visible = notice is not null;
+        noticeTitle.Text = notice is null ? "" : "업데이트 " + notice.VersionText + " · 변경 내용";
+        noticeContent.Text = notice is null ? "" : string.IsNullOrWhiteSpace(notice.Notes) ? "이 버전의 변경 내용이 등록되지 않았습니다." :
+            System.Text.RegularExpressions.Regex.Replace(notice.Notes, @"(?m)^#{1,6}\s+", "").Replace("**", "");
+        if (difference != 0)
+        {
+            MinimumSize = Size.Empty;
+            ClientSize = new Size(ClientSize.Width, ClientSize.Height + difference);
+            MinimumSize = Size;
+            if (IsHandleCreated)
+            {
+                var work = Screen.FromControl(this).WorkingArea;
+                Location = new Point(Math.Clamp(Left, work.Left, Math.Max(work.Left, work.Right - Width)),
+                    Math.Clamp(Top, work.Top, Math.Max(work.Top, work.Bottom - Height)));
+            }
+        }
+    }
+
     internal ConnectionForm(UsageSource codex, UsageSource claude, Action<UsageSource, bool> setEnabled)
         : this(new[] { codex, claude }, setEnabled) { }
 
@@ -67,11 +100,11 @@ internal sealed class ConnectionForm : Form
         connectButtons = new Button[this.sources.Length];
         refreshButtons = new Button[this.sources.Length];
         this.setEnabled = setEnabled;
-        Text = "서비스 연결 관리";
+        Text = "정보";
         Font = bodyFont;
-        BackColor = Color.FromArgb(32, 38, 46);
-        ForeColor = Color.FromArgb(230, 235, 241);
-        ClientSize = new Size(690, 282 + this.sources.Length * 62);
+        BackColor = Color.FromArgb(24, 24, 24);
+        ForeColor = Color.FromArgb(232, 232, 232);
+        ClientSize = new Size(690, 184 + this.sources.Length * 62);
         MinimumSize = ClientSize;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -80,17 +113,17 @@ internal sealed class ConnectionForm : Form
         StartPosition = FormStartPosition.CenterParent;
         AutoScaleMode = AutoScaleMode.Dpi;
 
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(18), ColumnCount = 4, RowCount = this.sources.Length + 4 };
+        layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(18), ColumnCount = 4, RowCount = this.sources.Length + 4 };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 115));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 168));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 46));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 43));
         foreach (var _ in this.sources) layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 110));
+        layout.RowStyles.Add(noticeRow);
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-        var intro = new Label { Text = "켜 둔 서비스만 조회합니다. 앱·CLI를 사용 중일 필요는 없습니다.", Dock = DockStyle.Fill, AutoSize = false };
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        var intro = new Label { Text = "아이콘 클릭하면 회전 및 연결 새로고침", Dock = DockStyle.Fill, AutoSize = false };
         layout.Controls.Add(intro, 0, 0);
         layout.SetColumnSpan(intro, 4);
         for (int index = 0; index < this.sources.Length; index++)
@@ -105,44 +138,44 @@ internal sealed class ConnectionForm : Form
                 RefreshRows();
             };
             statuses[index] = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(0, 0, 6, 0) };
-            connectButtons[index] = new ConnectButton { Text = "브라우저 로그인", Dock = DockStyle.Fill, Margin = new Padding(0, 12, 0, 12), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(52, 65, 78), UseVisualStyleBackColor = false };
+            connectButtons[index] = new ConnectButton { Text = "브라우저 로그인", Dock = DockStyle.Fill, Margin = new Padding(0, 12, 0, 12), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(45, 45, 45), UseVisualStyleBackColor = false };
             connectButtons[index].Click += async (_, _) => await ConnectAsync(source);
-            refreshButtons[index] = new RefreshButton { AccessibleName = source.Name + " 새로고침", AccessibleDescription = "저장된 인증과 사용량을 다시 확인합니다.", Dock = DockStyle.Fill, Margin = new Padding(6, 12, 0, 12), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(52, 65, 78), UseVisualStyleBackColor = false };
+            refreshButtons[index] = new RefreshButton { AccessibleName = source.Name + " 새로고침", AccessibleDescription = "연결 새로고침", Dock = DockStyle.Fill, Margin = new Padding(6, 12, 0, 12), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(45, 45, 45), UseVisualStyleBackColor = false };
             refreshButtons[index].Click += async (_, _) => await source.RefreshAsync();
+            connectButtons[index].FlatAppearance.BorderColor = refreshButtons[index].FlatAppearance.BorderColor = Color.FromArgb(80, 80, 80);
             layout.Controls.Add(toggles[index], 0, index + 1);
             layout.Controls.Add(statuses[index], 1, index + 1);
             layout.Controls.Add(connectButtons[index], 2, index + 1);
             layout.Controls.Add(refreshButtons[index], 3, index + 1);
             source.Changed += RefreshRows;
         }
-        int helpRow = this.sources.Length + 1;
-        var help = new Label { Text = "회전 화살표는 저장된 로그인과 서버 사용량을 다시 확인합니다.\nClaude는 데스크톱 앱 로그인을 우선 사용하고, 없으면 Code 로그인을 확인합니다.\n앱이 갱신한 인증은 다음 조회에 다시 읽습니다. 정상 연결은 60초 간격으로 조회합니다.\n조회 제한이 있으면 표시된 재시도 시간까지 기다립니다. 브라우저 로그인은 수동 연결입니다.\nGemini는 실험적이며 CLI 한도를 표시합니다.", Dock = DockStyle.Fill, AutoSize = false, ForeColor = Color.FromArgb(207, 217, 228) };
-        layout.Controls.Add(help, 0, helpRow);
-        layout.SetColumnSpan(help, 4);
-        layout.Controls.Add(outcome, 0, helpRow + 1);
+        int noticeIndex = this.sources.Length + 1;
+        noticePanel.Controls.Add(noticeContent);
+        noticePanel.Controls.Add(noticeTitle);
+        layout.Controls.Add(noticePanel, 0, noticeIndex);
+        layout.SetColumnSpan(noticePanel, 4);
+        int helpRow = noticeIndex + 1;
+        layout.Controls.Add(outcome, 0, helpRow);
         layout.SetColumnSpan(outcome, 2);
         cancel.Dock = DockStyle.Fill;
         cancel.FlatStyle = FlatStyle.Flat;
-        cancel.BackColor = Color.FromArgb(52, 65, 78);
+        cancel.BackColor = Color.FromArgb(45, 45, 45);
         cancel.UseVisualStyleBackColor = false;
         cancel.Margin = new Padding(0, 4, 0, 10);
-        layout.Controls.Add(cancel, 2, helpRow + 1);
+        layout.Controls.Add(cancel, 2, helpRow);
         layout.SetColumnSpan(cancel, 2);
         var footer = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
         reopen.LinkColor = Color.FromArgb(125, 209, 238);
         reopen.ActiveLinkColor = Color.White;
         reopen.LinkClicked += (_, _) => { if (loginUrl is not null) OpenUrl(loginUrl); };
         cancel.Click += (_, _) => loginCancellation?.Cancel();
-        foreach (var source in this.sources)
-        {
-            var install = new LinkLabel { Text = source.Name + " 설치 안내", AutoSize = true, LinkColor = reopen.LinkColor, Margin = new Padding(0, 8, 12, 0) };
-            install.LinkClicked += (_, _) => OpenUrl(OfficialLogin.InstallationUrl(source.Kind));
-            footer.Controls.Add(install);
-        }
         footer.Controls.Add(reopen);
+        update.BackColor = Color.FromArgb(45, 45, 45);
+        update.UseVisualStyleBackColor = false;
+        update.FlatAppearance.BorderColor = cancel.FlatAppearance.BorderColor = Color.FromArgb(80, 80, 80);
         update.Click += (_, _) => UpdateRequested?.Invoke(this, EventArgs.Empty);
         footer.Controls.Add(update);
-        layout.Controls.Add(footer, 0, helpRow + 2);
+        layout.Controls.Add(footer, 0, helpRow + 1);
         layout.SetColumnSpan(footer, 4);
         Controls.Add(layout);
         RefreshRows();
@@ -159,6 +192,8 @@ internal sealed class ConnectionForm : Form
             connectButtons[index].Enabled = loginCancellation is null && source.Enabled && !source.Refreshing;
             refreshButtons[index].Enabled = loginCancellation is null && source.Enabled && !source.Refreshing;
             statuses[index].Text = (source.Gemini ? "실험 · " : "") + (source.Refreshing ? "로그인·사용량 확인 중…" : source.Status);
+            if (source.Claude && !source.Refreshing && source.Data?.PlanLabel is null && source.Detail is not null)
+                statuses[index].Text += " · " + source.Detail;
         }
         updating = false;
         if (connectingSource is { Enabled: false }) loginCancellation?.Cancel();
@@ -169,7 +204,7 @@ internal sealed class ConnectionForm : Form
         if (loginCancellation is not null || !source.Enabled) return;
         if (!OfficialLogin.IsAvailable(source.Kind))
         {
-            outcome.Text = source.Name + " 로그인 도구를 찾지 못했습니다. 아래 공식 설치 안내를 이용한 뒤 다시 연결하세요.";
+            outcome.Text = source.Name + " 로그인 도구가 없습니다. 공식 CLI 설치 후 다시 연결하세요.";
             return;
         }
         using var cancellation = new CancellationTokenSource();
@@ -221,6 +256,18 @@ internal sealed class ConnectionForm : Form
     {
         try { Process.Start(new ProcessStartInfo(url.AbsoluteUri) { UseShellExecute = true }); }
         catch (System.ComponentModel.Win32Exception) { outcome.Text = "기본 브라우저를 열지 못했습니다. Windows의 기본 브라우저 설정을 확인해 주세요."; }
+    }
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int size);
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        int dark = 1, background = ColorTranslator.ToWin32(BackColor), text = ColorTranslator.ToWin32(ForeColor);
+        DwmSetWindowAttribute(Handle, 20, ref dark, sizeof(int));
+        DwmSetWindowAttribute(Handle, 35, ref background, sizeof(int));
+        DwmSetWindowAttribute(Handle, 36, ref text, sizeof(int));
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e)

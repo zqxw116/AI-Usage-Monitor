@@ -7,13 +7,26 @@ using System.Text.RegularExpressions;
 
 namespace UsageMonitor;
 
-internal sealed record UpdateRelease(Version Version, Uri DownloadUrl, string Sha256, long Size)
+internal sealed record UpdateRelease(Version Version, Uri DownloadUrl, string Sha256, long Size, string ReleaseNotes = "")
 {
+    internal string VersionText => Version.ToString(3);
     internal Uri ReleasePage => new($"https://github.com/zqxw116/AI-Usage-Monitor/releases/tag/v{Version.ToString(3)}");
 }
 
 internal static class AppUpdater
 {
+    internal static Task<UpdateRelease?> GetCurrentReleaseAsync(Version current, CancellationToken cancellation = default) =>
+        GetCurrentReleaseAsync(Http, current, cancellation);
+
+    internal static async Task<UpdateRelease?> GetCurrentReleaseAsync(HttpClient http, Version current, CancellationToken cancellation)
+    {
+        var release = await FetchReleaseAsync(http, "https://api.github.com/repos/zqxw116/AI-Usage-Monitor/releases/tags/v" + current.ToString(3), new Version(0, 0, 0), cancellation);
+        return release?.Version == current ? release : null;
+    }
+
+    internal static bool SamePayload(UpdateRelease? first, UpdateRelease second) => first is not null &&
+        first.Version == second.Version && first.DownloadUrl == second.DownloadUrl && first.Size == second.Size &&
+        first.Sha256.Equals(second.Sha256, StringComparison.OrdinalIgnoreCase);
     private const string Repository = "https://github.com/zqxw116/AI-Usage-Monitor";
     private const string AssetName = "AI-Usage-Monitor-win-x64.exe";
     private const long MaximumSize = 500_000_000;
@@ -34,18 +47,21 @@ internal static class AppUpdater
         return http;
     }
 
-    internal static async Task<UpdateRelease?> CheckAsync(CancellationToken cancellation = default)
+    internal static Task<UpdateRelease?> CheckAsync(CancellationToken cancellation = default) =>
+        FetchReleaseAsync(Http, "https://api.github.com/repos/zqxw116/AI-Usage-Monitor/releases/latest", CurrentVersion, cancellation);
+
+    private static async Task<UpdateRelease?> FetchReleaseAsync(HttpClient http, string url, Version current, CancellationToken cancellation)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
-        using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.github.com/repos/zqxw116/AI-Usage-Monitor/releases/latest");
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.Accept.ParseAdd("application/vnd.github+json");
         request.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
-        using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+        using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
         if (response.StatusCode == HttpStatusCode.NotFound) return null;
         response.EnsureSuccessStatusCode();
         await response.Content.LoadIntoBufferAsync(1_000_000, timeout.Token);
-        return ParseRelease(await response.Content.ReadAsStringAsync(timeout.Token), CurrentVersion);
+        return ParseRelease(await response.Content.ReadAsStringAsync(timeout.Token), current);
     }
 
     internal static UpdateRelease? ParseRelease(string json, Version current)
@@ -70,7 +86,10 @@ internal static class AppUpdater
                 !asset.TryGetProperty("digest", out var digestValue) || digestValue.ValueKind != JsonValueKind.String) continue;
             string digest = digestValue.GetString()!;
             if (Regex.IsMatch(digest, "^sha256:[0-9a-fA-F]{64}$"))
-                return new UpdateRelease(version, new Uri(expectedUrl), digest[7..], size);
+            {
+                string notes = root.TryGetProperty("body", out var body) && body.ValueKind == JsonValueKind.String ? body.GetString()! : "";
+                return new UpdateRelease(version, new Uri(expectedUrl), digest[7..], size, UpdateNoticeStore.BoundNotes(notes));
+            }
         }
         throw new InvalidDataException("새 릴리스의 Windows 실행 파일, 다운로드 주소 또는 SHA256 정보를 검증할 수 없습니다.");
     }
@@ -80,7 +99,7 @@ internal static class AppUpdater
     {
         // Refresh trusted metadata rather than trusting stale UI state or a caller-created record.
         var latest = await CheckAsync(cancellation);
-        if (latest != release) throw new InvalidOperationException("릴리스 정보가 변경되었습니다. 업데이트를 다시 확인하세요.");
+        if (!SamePayload(latest, release)) throw new InvalidOperationException("릴리스 정보가 변경되었습니다. 업데이트를 다시 확인하세요.");
         string target = Environment.ProcessPath ?? throw new InvalidOperationException("실행 파일 경로를 확인할 수 없습니다.");
         string executableName = Path.GetFileName(target);
         if (!string.Equals(executableName, "AI Usage Monitor.exe", StringComparison.OrdinalIgnoreCase) &&

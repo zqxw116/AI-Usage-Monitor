@@ -15,7 +15,6 @@ internal sealed class MonitorForm : Form
     private static readonly Color LabelColor = Color.FromArgb(220, 228, 236);
     private static readonly Color TimeColor = Color.FromArgb(207, 217, 228);
     private static readonly Color Muted = Color.FromArgb(149, 161, 174);
-    private static readonly TimeZoneInfo Korea = TimeZoneInfo.FindSystemTimeZoneById("Korea Standard Time");
     private readonly Icon applicationIcon = LoadApplicationIcon();
     private readonly Bitmap gptLogo = LoadLogo("GptLogo.png");
     private readonly Bitmap claudeLogo = LoadLogo("ClaudeLogo.png");
@@ -23,6 +22,11 @@ internal sealed class MonitorForm : Form
     private readonly UsageSource[] sources;
     private readonly MonitorSettings settings;
     private ConnectionForm? connections;
+    private UpdateNotice? updateNotice;
+    private readonly string? noticeDirectory;
+    internal bool HasUnreadUpdate => updateNotice is { IsRead: false };
+    internal int BlinkingNoticeButton => !HasUnreadUpdate ? -1 : toolsExpanded ? 7 : 8;
+    private Color NoticeInk => Color.FromArgb((int)(80 + 175 * (.5 + .5 * Math.Sin(EffectTime * Math.PI / 1.4))), 255, 210, 135);
     private readonly System.Windows.Forms.Timer timer = new() { Interval = 1000 };
     private readonly System.Windows.Forms.Timer orangeTimer = new() { Interval = 33 };
     private OrangeWalker orange = new(OrangeWalker.Characters[0]);
@@ -40,7 +44,7 @@ internal sealed class MonitorForm : Form
     private readonly (double Period, double Offset)[] iconMotion = Enumerable.Range(0, 3)
         .Select(i => (3.4 + Random.Shared.NextDouble() * .6, i * .75 + Random.Shared.NextDouble() * .35)).ToArray();
     private double EffectTime => orangeTime;
-    private readonly Font planFont = new("Segoe UI", 10, FontStyle.Bold, GraphicsUnit.Pixel);
+    private readonly Font planFont = new("Segoe UI", 8.5f, FontStyle.Bold, GraphicsUnit.Pixel);
     private readonly ToolTip tooltip = new() { AutoPopDelay = 20000, InitialDelay = 300, ReshowDelay = 100 };
     // 픽셀 글꼴과 단일 배율로 모든 요소를 함께 확대·축소합니다.
     private readonly Font labelFont = new("맑은 고딕", 11.5f, FontStyle.Bold, GraphicsUnit.Pixel);
@@ -48,6 +52,7 @@ internal sealed class MonitorForm : Form
     private readonly Font timeFont = new("맑은 고딕", 12f, FontStyle.Regular, GraphicsUnit.Pixel);
     private readonly Font brandFont = new("Segoe UI", 11f, FontStyle.Bold, GraphicsUnit.Pixel);
     private readonly Dictionary<(string Name, int Color), (Bitmap Image, float Width)[]> brandGlyphs = new();
+    private float brandRasterScale;
     private readonly StringFormat brandFormat = (StringFormat)StringFormat.GenericTypographic.Clone();
     private readonly Font buttonFont = new("맑은 고딕", 12f, FontStyle.Regular, GraphicsUnit.Pixel);
     private bool vertical;
@@ -100,10 +105,13 @@ internal sealed class MonitorForm : Form
     [DllImport("user32.dll")] private static extern bool ReleaseCapture();
     [DllImport("user32.dll")] internal static extern IntPtr SendMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
 
-    public MonitorForm(UsageSource codex, UsageSource claude, bool live = true, MonitorSettings? settings = null, UsageSource? gemini = null)
+    public MonitorForm(UsageSource codex, UsageSource claude, bool live = true, MonitorSettings? settings = null, UsageSource? gemini = null,
+        UpdateNotice? notice = null, string? noticeDirectory = null)
     {
         sources = gemini is null ? new[] { codex, claude } : new[] { codex, claude, gemini };
         this.settings = settings ?? (live ? MonitorSettings.Load() : new MonitorSettings());
+        this.noticeDirectory = noticeDirectory;
+        updateNotice = notice ?? (live ? UpdateNoticeStore.LoadForCurrentVersion(AppUpdater.CurrentVersion, noticeDirectory) : null);
         foreach (var source in sources) source.SetEnabled(this.settings.IsEnabled(source.Kind));
         liveAnimation = live;
         UpdateCodexWidth();
@@ -145,6 +153,11 @@ internal sealed class MonitorForm : Form
             var region = Rectangle.Ceiling(new RectangleF(damage.X * sx, damage.Y * sy, damage.Width * sx, damage.Height * sy));
             region.Inflate(2, 2);
             Invalidate(region);
+            if (BlinkingNoticeButton is var noticeButton && noticeButton >= 0)
+            {
+                var box = ButtonBounds(noticeButton);
+                Invalidate(Rectangle.Ceiling(new RectangleF(box.X * sx, box.Y * sy, box.Width * sx, box.Height * sy)));
+            }
             if (this.settings.VisualEffects || sources.Any(source => RefreshSpinActive(source)))
             {
                 foreach (var panel in Panels())
@@ -280,7 +293,7 @@ internal sealed class MonitorForm : Form
             trayMenu.Items.Add(item);
             serviceItems.Add((source, item));
         }
-        trayMenu.Items.Add("서비스 연결 관리…", null, (_, _) => ShowConnections());
+        trayMenu.Items.Add("정보…", null, (_, _) => ShowConnections());
         trayMenu.Items.Add("최신 버전 업데이트…", null, async (_, _) => await UpdateAppAsync());
         trayMenu.Items.Add(new ToolStripSeparator());
         trayMenu.Items.Add("종료", null, (_, _) => Close());
@@ -312,6 +325,21 @@ internal sealed class MonitorForm : Form
         try
         {
             var token = updateLifetime.Token;
+            if (updateNotice is null)
+            {
+                // Older installers did not save notes. Recover the current release on first launch.
+                try
+                {
+                    var current = await AppUpdater.GetCurrentReleaseAsync(AppUpdater.CurrentVersion, token);
+                    if (current is not null && UpdateNoticeStore.Save(current, noticeDirectory))
+                    {
+                        updateNotice = UpdateNoticeStore.LoadForCurrentVersion(AppUpdater.CurrentVersion, noticeDirectory);
+                        if (connections is { IsDisposed: false }) connections.SetReleaseNotice(updateNotice);
+                        Invalidate();
+                    }
+                }
+                catch (Exception error) when (error is HttpRequestException or IOException or System.Text.Json.JsonException or OperationCanceledException) { }
+            }
             var release = await AppUpdater.CheckAsync(token);
             token.ThrowIfCancellationRequested();
             Form owner = connections is { IsDisposed: false, Visible: true } ? connections : this;
@@ -325,6 +353,7 @@ internal sealed class MonitorForm : Form
             if (connections is { IsDisposed: false }) connections.SetUpdateStatus("다운로드 중…");
             if (trayIcon is not null) trayIcon.Text = "AI 사용량 모니터 · 업데이트 다운로드 중";
             await AppUpdater.InstallAsync(release, token);
+            UpdateNoticeStore.Save(release, noticeDirectory);
             Application.Exit();
         }
         catch (Exception ex)
@@ -354,13 +383,22 @@ internal sealed class MonitorForm : Form
         if (enabled && liveAnimation) _ = source.TickAsync(true);
     }
 
-    internal void ShowConnections()
+    internal void ShowConnections(bool acknowledgeUpdate = false)
     {
         foreach (var source in sources.Where(source => source.Enabled)) _ = source.RefreshAsync();
-        if (connections is { IsDisposed: false }) { connections.Activate(); return; }
-        connections = new ConnectionForm(sources, SetServiceEnabled) { TopMost = TopMost };
-        connections.UpdateRequested += async (_, _) => await UpdateAppAsync();
-        connections.Show(this);
+        if (connections is { IsDisposed: false }) connections.Activate();
+        else
+        {
+            connections = new ConnectionForm(sources, SetServiceEnabled) { TopMost = TopMost };
+            connections.SetReleaseNotice(updateNotice);
+            connections.UpdateRequested += async (_, _) => await UpdateAppAsync();
+            connections.Show(this);
+        }
+        if (acknowledgeUpdate && HasUnreadUpdate && UpdateNoticeStore.Acknowledge(AppUpdater.CurrentVersion, noticeDirectory))
+        {
+            updateNotice = updateNotice! with { IsRead = true };
+            Invalidate();
+        }
     }
 
     internal void HideToTray()
@@ -526,7 +564,7 @@ internal sealed class MonitorForm : Form
         }
         DrawButton(g, 8, "", toolsExpanded);
         var menu = ButtonBounds(8);
-        using (var icon = new Pen(LabelColor, 1.5f))
+        using (var icon = new Pen(BlinkingNoticeButton == 8 ? NoticeInk : LabelColor, 1.5f))
         {
             if (toolsExpanded)
             {
@@ -549,11 +587,12 @@ internal sealed class MonitorForm : Form
     private void DrawButton(Graphics g, int button, string label, bool active)
     {
         var area = ButtonBounds(button);
+        bool notice = BlinkingNoticeButton == button;
         using var background = new SolidBrush(active ? Color.FromArgb(51, 81, 72) : Color.FromArgb(36, 43, 51));
-        using var outline = new Pen(button is 2 or 5 ? Color.FromArgb(166, 119, 81) : active ? Color.FromArgb(112, 181, 156) : Color.FromArgb(73, 88, 102));
+        using var outline = new Pen(notice ? NoticeInk : button is 2 or 5 ? Color.FromArgb(166, 119, 81) : active ? Color.FromArgb(112, 181, 156) : Color.FromArgb(73, 88, 102));
         g.FillRectangle(background, area);
         g.DrawRectangle(outline, area.X, area.Y, area.Width, area.Height);
-        Color ink = active ? Color.FromArgb(160, 224, 194) : LabelColor;
+        Color ink = notice ? NoticeInk : active ? Color.FromArgb(160, 224, 194) : LabelColor;
         if (button is not (0 or 6 or 7))
         {
             if (label.Length > 0) DrawText(g, label, buttonFont, ink, area, true);
@@ -578,9 +617,10 @@ internal sealed class MonitorForm : Form
         }
         else
         {
-            g.RotateTransform(-45);
-            g.DrawEllipse(pen, -6, -2.5f, 7, 5);
-            g.DrawEllipse(pen, -1, -2.5f, 7, 5);
+            g.DrawEllipse(pen, -6, -6, 12, 12);
+            g.DrawLine(pen, 0, -3, 0, .5f);
+            using var dot = new SolidBrush(ink);
+            g.FillEllipse(dot, -1, 2.5f, 2, 2);
         }
         g.Restore(saved);
     }
@@ -607,6 +647,16 @@ internal sealed class MonitorForm : Form
     private void DrawBrand(Graphics g, string name, Color color, RectangleF area, double phase, bool hasPlan)
     {
         if (!settings.VisualEffects) { DrawText(g, name, brandFont, color, area, true); return; }
+        using var transform = g.Transform;
+        var elements = transform.Elements;
+        float scale = Math.Max(MathF.Sqrt(elements[0] * elements[0] + elements[1] * elements[1]),
+            MathF.Sqrt(elements[2] * elements[2] + elements[3] * elements[3]));
+        float rasterScale = Math.Max(1, MathF.Ceiling(scale * 4) / 4);
+        if (brandRasterScale != rasterScale)
+        {
+            ClearBrandGlyphs();
+            brandRasterScale = rasterScale;
+        }
         const int padding = 2;
         var key = (name, color.ToArgb());
         if (!brandGlyphs.TryGetValue(key, out var glyphs))
@@ -615,10 +665,11 @@ internal sealed class MonitorForm : Form
                 .Select(glyph =>
                 {
                     float width = g.MeasureString(glyph, brandFont, PointF.Empty, brandFormat).Width;
-                    var image = new Bitmap((int)Math.Ceiling(width) + padding * 2,
-                        (int)Math.Ceiling(brandFont.GetHeight(g)) + padding * 2, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+                    var image = new Bitmap((int)Math.Ceiling((width + padding * 2) * rasterScale),
+                        (int)Math.Ceiling((brandFont.GetHeight(g) + padding * 2) * rasterScale), System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
                     image.SetResolution(g.DpiX, g.DpiY);
                     using var raster = Graphics.FromImage(image);
+                    raster.ScaleTransform(rasterScale, rasterScale);
                     raster.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
                     using var brush = new SolidBrush(color);
                     raster.DrawString(glyph, brandFont, brush, new PointF(padding, padding), brandFormat);
@@ -638,11 +689,18 @@ internal sealed class MonitorForm : Form
         {
             float offset = (hasPlan ? 1.3f : 2f) * (float)-Math.Sin(phase * Math.PI * 2 / 1.8 - index * .65);
             var image = glyphs[index].Image;
-            g.DrawImage(image, new RectangleF(x - padding, y + offset - padding, image.Width, image.Height),
+            g.DrawImage(image, new RectangleF(x - padding, y + offset - padding, image.Width / rasterScale, image.Height / rasterScale),
                 new RectangleF(0, 0, image.Width, image.Height), GraphicsUnit.Pixel);
             x += glyphs[index].Width;
         }
         g.Restore(saved);
+    }
+
+    private void ClearBrandGlyphs()
+    {
+        foreach (var glyphs in brandGlyphs.Values)
+            foreach (var glyph in glyphs) glyph.Image.Dispose();
+        brandGlyphs.Clear();
     }
 
     private void DrawService(Graphics g, UsageSource source, int x, int y, Color accent, string name)
@@ -672,7 +730,7 @@ internal sealed class MonitorForm : Form
         string? plan = source.Data?.PlanLabel;
         DrawBrand(g, name, accent, new RectangleF(x + 3, y + (plan is null ? 31 : 28), 66, 13),
             EffectTime + motion.Offset, plan is not null);
-        if (plan is not null) DrawText(g, source.Gemini ? "CLI · " + plan : plan, planFont, TimeColor, new RectangleF(x + 2, y + 38, 68, 10), true);
+        if (plan is not null) DrawText(g, source.Gemini ? "CLI · " + plan : plan, planFont, TimeColor, new RectangleF(x + 2, y + 39, 68, 8), true);
         if (!source.Enabled || source.Connecting)
         {
             DrawText(g, source.Enabled ? "브라우저 로그인 대기 중" : "비활성 · 연결 관리에서 켜기", valueFont,
@@ -682,10 +740,10 @@ internal sealed class MonitorForm : Form
         bool outdated = source.Failed || source.Data is null || DateTimeOffset.UtcNow - source.Data.Retrieved > TimeSpan.FromMinutes(2);
         using var dot = new SolidBrush(outdated ? Color.FromArgb(211, 157, 92) : accent);
         g.FillEllipse(dot, x + 70, y + 34, 4, 4);
-        bool pro = source.Kind == ServiceKind.Codex && source.Data?.CodexPro == true;
+        bool pro = UsesPremiumPalette(source.Kind, source.Data);
         bool weeklyOnly = PanelWidth(source) < ServiceWidth;
         if (!weeklyOnly)
-            DrawQuota(g, source.Data?.FiveHour, x + 79, y, source.Data?.PrimaryLabel ?? (source.Gemini ? "모델1" : "5시간"), source.Kind, outdated);
+            DrawQuota(g, source.Data?.FiveHour, x + 79, y, source.Data?.PrimaryLabel ?? (source.Gemini ? "모델1" : "5시간"), source.Kind, outdated, 200, pro);
         DrawQuota(g, source.Data?.Weekly, x + (weeklyOnly ? 79 : 289), y,
             source.Data?.SecondaryLabel ?? (source.Gemini ? "모델2" : "주간"),
             source.Kind, outdated, 200, pro);
@@ -713,14 +771,15 @@ internal sealed class MonitorForm : Form
             remaining >= 60 ? Color.FromArgb(166, 181, 255) : remaining >= 40 ? Color.FromArgb(204, 174, 255) : Color.FromArgb(255, 184, 126);
     }
 
-    private static Brush ProFill(float x, float y, float length, Color band, bool low)
+    internal static bool UsesPremiumPalette(ServiceKind kind, Snapshot? data) => data is not null &&
+        (kind == ServiceKind.Codex ? data.CodexPro : kind == ServiceKind.Claude && data.PlanLabel is "Max" or "Max 5x" or "Max 20x");
+
+    private static Brush ProFill(float x, float y, float length, Color band)
     {
         var brush = new LinearGradientBrush(new RectangleF(x, y, Math.Max(1, length), 7), band, band, 0f);
         brush.InterpolationColors = new ColorBlend {
             Positions = [0, .22f, .48f, .73f, 1],
-            Colors = low
-                ? [band, Color.Salmon, Color.Tomato, Color.Crimson, band]
-                : [band, Color.FromArgb(55, 225, 232), Color.FromArgb(108, 135, 255),
+            Colors = [band, Color.FromArgb(55, 225, 232), Color.FromArgb(108, 135, 255),
                     Color.FromArgb(207, 111, 255), Color.FromArgb(255, 131, 177)]
         };
         return brush;
@@ -731,7 +790,7 @@ internal sealed class MonitorForm : Form
         bool valid = quota is not null && !quota.Expired;
         DrawText(g, title, labelFont, pro ? Color.FromArgb(238, 197, 255) : LabelColor, new RectangleF(x, y + 7, 36, 19));
         var remaining = valid ? $"{quota!.Remaining:0.#}% 남음" : quota?.Expired == true ? "확인 중" : "—";
-        var color = valid ? RemainingColor(quota!.Remaining, kind) : Muted;
+        var color = valid ? RemainingColor(pro ? 100 : quota!.Remaining, kind) : Muted;
         DrawText(g, remaining, valueFont, color, new RectangleF(x + 36, y + 7, 71, 19));
         string countdown = Countdown(quota?.Reset);
         if (countdown.Length > 0 && g.IsVisible(new RectangleF(x + 107, y + 7, width - 107, 19)))
@@ -754,10 +813,10 @@ internal sealed class MonitorForm : Form
                 double t = EffectTime + (int)kind * .41;
                 var state = g.Save();
                 g.SetClip(new RectangleF(x + 1, y + 32, length, 7), CombineMode.Intersect);
-                using Brush palette = pro ? ProFill(x + 1, y + 32, length, color, quota.Remaining <= 20) : new SolidBrush(color);
+                using Brush palette = pro ? ProFill(x + 1, y + 32, length, color) : new SolidBrush(color);
                 if (palette is LinearGradientBrush rainbow) rainbow.WrapMode = WrapMode.TileFlipX;
-                using var lightA = LightWave(64, .48f);
-                using var lightB = LightWave(91, .54f);
+                using var lightA = LightWave(64, pro ? .48f : .22f);
+                using var lightB = LightWave(91, pro ? .54f : .28f);
                 for (int row = 0; row < 7; row++)
                 {
                     float v = row / 6f;
@@ -780,7 +839,7 @@ internal sealed class MonitorForm : Form
             }
             else
             {
-                using Brush fill = pro ? ProFill(x + 1, y + 32, length, color, quota.Remaining <= 20) : new SolidBrush(color);
+                using Brush fill = pro ? ProFill(x + 1, y + 32, length, color) : new SolidBrush(color);
                 g.FillRectangle(fill, x + 1, y + 32, length, 7);
             }
         }
@@ -832,29 +891,10 @@ internal sealed class MonitorForm : Form
         hoverPart = part;
         if (button >= 0)
         {
-            tooltip.SetToolTip(this, button switch { 0 => TopMost ? "최상단 고정 해제" : "최상단 고정", 1 => vertical ? "가로 모드로 전환" : "세로 모드로 전환", 2 => "캐릭터 크기 키우기", 3 => "종료", 4 => "트레이로 숨기기", 5 => "캐릭터 크기 줄이기", 6 => "캐릭터 선택 · " + OrangeWalker.Characters[selectedCharacter].Name, 7 => "서비스 활성화 · 브라우저 로그인", _ => toolsExpanded ? "버튼 목록 접기" : "버튼 목록 펼치기" });
+            tooltip.SetToolTip(this, button switch { 0 => TopMost ? "최상단 고정 해제" : "최상단 고정", 1 => vertical ? "가로 모드로 전환" : "세로 모드로 전환", 2 => "캐릭터 크기 키우기", 3 => "종료", 4 => "트레이로 숨기기", 5 => "캐릭터 크기 줄이기", 6 => "캐릭터 선택", 7 => "정보", _ => toolsExpanded ? "버튼 목록 접기" : "버튼 목록 펼치기" });
             return;
         }
-        if (source is null || point.X >= ServiceAreaWidth) { tooltip.SetToolTip(this, "메뉴에서 서비스 연결과 창 조작을 관리합니다."); return; }
-        string details = source.Name + " · " + source.Status;
-        details += "\n아이콘 클릭: 로그인·사용량 새로고침";
-        if (source.Detail is not null) details += "\n" + source.Detail;
-        if (source.Data is { } data)
-        {
-            details += "\n마지막 확인: " + TimeZoneInfo.ConvertTime(data.Retrieved, Korea).ToString("yyyy-MM-dd HH:mm:ss") + " (한국 시간)";
-            details += (source.Gemini ? "\nCode Assist 등급: " : "\n요금제: ") + (data.PlanLabel ?? "미확인");
-            if (PanelWidth(source) == ServiceWidth) details += Details(data.PrimaryLabel ?? "5시간", data.FiveHour);
-            details += Details(data.SecondaryLabel ?? "주간", data.Weekly);
-        }
-        details += "\n빈 곳 드래그: 이동 · 테두리 드래그: 비율 유지 크기 조절";
-        tooltip.SetToolTip(this, details);
-    }
-
-    private static string Details(string name, Quota? quota)
-    {
-        if (quota is null) return "\n" + name + ": 정보 없음";
-        var reset = quota.Reset is { } date ? TimeZoneInfo.ConvertTime(date, Korea).ToString("yyyy-MM-dd HH:mm:ss") : "미제공";
-        return $"\n{name}: 사용 {quota.Used:0.#}% / 남음 {quota.Remaining:0.#}% · 초기화 {reset}";
+        tooltip.SetToolTip(this, source is null || point.X >= ServiceAreaWidth ? "" : "아이콘 클릭: 연결 새로고침");
     }
 
     protected override void OnMouseDown(MouseEventArgs e)
@@ -866,7 +906,7 @@ internal sealed class MonitorForm : Form
         for (int i = toolsExpanded ? 0 : 8; i < 9; i++)
         {
             if (!ButtonBounds(i).Contains(point)) continue;
-            switch (i) { case 0: TogglePin(); break; case 1: ToggleLayout(); break; case 2: ChangeOrangeSize(4); break; case 3: Close(); break; case 4: HideToTray(); break; case 5: ChangeOrangeSize(-4); break; case 6: characterMenu.Show(this, new Point(e.X, e.Y)); break; case 7: ShowConnections(); break; case 8: ToggleTools(); break; }
+            switch (i) { case 0: TogglePin(); break; case 1: ToggleLayout(); break; case 2: ChangeOrangeSize(4); break; case 3: Close(); break; case 4: HideToTray(); break; case 5: ChangeOrangeSize(-4); break; case 6: characterMenu.Show(this, new Point(e.X, e.Y)); break; case 7: ShowConnections(acknowledgeUpdate: true); break; case 8: ToggleTools(); break; }
             return;
         }
         foreach (var panel in Panels())
@@ -895,9 +935,7 @@ internal sealed class MonitorForm : Form
             applicationIcon.Dispose(); gptLogo.Dispose(); claudeLogo.Dispose(); geminiLogo.Dispose();
             labelFont.Dispose(); valueFont.Dispose(); timeFont.Dispose(); brandFont.Dispose(); buttonFont.Dispose(); planFont.Dispose();
             brandFormat.Dispose();
-            foreach (var glyphs in brandGlyphs.Values)
-                foreach (var glyph in glyphs) glyph.Image.Dispose();
-            brandGlyphs.Clear();
+            ClearBrandGlyphs();
         }
         base.Dispose(disposing);
     }

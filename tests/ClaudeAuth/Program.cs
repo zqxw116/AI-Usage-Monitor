@@ -25,6 +25,7 @@ internal static class Program
         try
         {
             CheckDesktopPriority(root);
+            CheckDesktopPlansAsync(root).GetAwaiter().GetResult();
             ClaudeConnectionChecks.Run(Path.Combine(root, "legacy"), Check);
             string key = "acct:" + Account + "|9d1c250a-e61b-44d9-88ed-5944d1962f5e:" + Organization + ":https://api.anthropic.com:";
             var entries = new Dictionary<string, object?>
@@ -65,6 +66,88 @@ internal static class Program
         }
         Console.WriteLine($"RESULT passed={passed} failed={failed}");
         return failed == 0 ? 0 : 1;
+    }
+
+    private sealed class PlanHandler : HttpMessageHandler
+    {
+        internal int UsageCalls, MetadataCalls;
+        internal bool FailMetadata, UsageHasPlan;
+        internal string ProfileOrganization = Organization;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellation)
+        {
+            string path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/usage"))
+            {
+                UsageCalls++;
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(
+                    "{\"five_hour\":{\"utilization\":23},\"seven_day\":{\"utilization\":12}" + (UsageHasPlan ? ",\"subscription_type\":\"pro\"}" : "}")) });
+            }
+            MetadataCalls++;
+            if (FailMetadata) return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden));
+            string plan = request.Headers.Authorization?.Parameter == "synthetic-plan-second" ? "claude_pro" : "claude_team";
+            string body = path == "/api/oauth/profile"
+                ? "{\"account\":{},\"organization\":{\"uuid\":\"" + ProfileOrganization + "\",\"organization_type\":\"" + plan + "\"}}"
+                : "[{\"uuid\":\"" + Guid.NewGuid() + "\",\"subscription_type\":\"pro\"},{\"uuid\":\"" + Organization + "\",\"subscription_type\":\"team\"}]";
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) });
+        }
+    }
+
+    private static async Task CheckDesktopPlansAsync(string root)
+    {
+        var credential = new ClaudeDesktopCredential { Bearer = "synthetic-plan-first", Organization = Organization };
+        var handler = new PlanHandler();
+        using var client = new HttpClient(handler);
+        using (var source = new UsageSource(true, client, root, () => credential, true))
+        {
+            await source.TickAsync(true);
+            Check(!source.Failed && source.Data?.PlanLabel == "Team", "사용량에 없는 Desktop 요금제를 현재 조직의 profile에서 확인");
+            await source.TickAsync(true);
+            Check(handler.UsageCalls == 2 && handler.MetadataCalls == 1 && source.Data?.PlanLabel == "Team", "같은 인증의 요금제는 캐시하여 매 새로고침에 추가 요청하지 않음");
+            credential = new ClaudeDesktopCredential { Bearer = "synthetic-plan-second", Organization = Organization };
+            await source.TickAsync(true);
+            Check(source.Data?.PlanLabel == "Pro" && handler.MetadataCalls == 2, "인증이 바뀌면 이전 요금제를 제거하고 새 계정 요금제 조회");
+            credential = new ClaudeDesktopCredential { Bearer = "synthetic-plan-third", Organization = Organization };
+            handler.FailMetadata = true;
+            await source.TickAsync(true);
+            Check(!source.Failed && source.Data?.PlanLabel is null && source.Detail?.Contains("요금제") == true,
+                "새 인증의 요금제 조회가 실패해도 이전 계정 요금제를 재사용하지 않음");
+            await source.TickAsync(true);
+            Check(handler.MetadataCalls == 3 && source.Detail?.Contains("요금제") == true,
+                "같은 인증의 요금제 실패도 매번 재요청하지 않고 실패 설명 유지");
+        }
+        handler = new PlanHandler { FailMetadata = true };
+        using var failingClient = new HttpClient(handler);
+        using (var source = new UsageSource(true, failingClient, root, () => credential, true))
+        {
+            await source.TickAsync(true);
+            Check(!source.Failed && source.Data?.FiveHour?.Used == 23 && source.Data.PlanLabel is null && source.Detail?.Contains("요금제") == true,
+                "요금제 조회 실패는 사용량을 유지하고 확인 실패를 명시");
+            handler.FailMetadata = false;
+            await source.RefreshAsync();
+            Check(source.Data?.PlanLabel == "Team" && handler.MetadataCalls == 2,
+                "수동 새로고침은 이전에 실패한 요금제 조회를 다시 시도");
+        }
+        handler = new PlanHandler { ProfileOrganization = Guid.NewGuid().ToString() };
+        using var mismatchClient = new HttpClient(handler);
+        using (var source = new UsageSource(true, mismatchClient, root, () => credential, true))
+        {
+            await source.TickAsync(true);
+            Check(!source.Failed && source.Data?.PlanLabel is null, "profile이 현재 Desktop 조직과 다르면 그 요금제를 사용하지 않음");
+        }
+        handler = new PlanHandler();
+        using var sessionClient = new HttpClient(handler);
+        using (var source = new UsageSource(true, sessionClient, root, () => new ClaudeDesktopCredential { SessionKey = "synthetic-plan-session", Organization = Organization }, true))
+        {
+            await source.TickAsync(true);
+            Check(source.Data?.PlanLabel == "Team" && handler.MetadataCalls == 1, "여러 조직 중 현재 Desktop 조직과 일치하는 요금제만 선택");
+        }
+        handler = new PlanHandler { UsageHasPlan = true };
+        using var completeClient = new HttpClient(handler);
+        using (var source = new UsageSource(true, completeClient, root, () => credential, true))
+        {
+            await source.TickAsync(true);
+            Check(source.Data?.PlanLabel == "Pro" && handler.MetadataCalls == 0, "사용량 응답에 요금제가 있으면 추가 메타데이터 요청 생략");
+        }
     }
 
     private sealed class ForbiddenHandler : HttpMessageHandler

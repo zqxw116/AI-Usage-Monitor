@@ -53,6 +53,8 @@ internal static class ClaudeConnectionChecks
         bool cookieCorrect = false;
         handler.Reply = request =>
         {
+            if (request.RequestUri!.AbsolutePath == "/api/organizations")
+                return Json("[{\"uuid\":\"" + organization + "\",\"subscription_type\":\"team\"}]");
             cookieCorrect = request.RequestUri!.AbsoluteUri == "https://claude.ai/api/organizations/" + organization + "/usage" &&
                 request.Headers.GetValues("Cookie").Single() == "sessionKey=synthetic-session" && request.Headers.Authorization is null;
             return Json();

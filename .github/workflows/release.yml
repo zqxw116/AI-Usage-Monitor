@@ -41,12 +41,14 @@ jobs:
           $asset = 'artifacts/release/AI-Usage-Monitor-win-x64.exe'
           $hash = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()
           [IO.File]::WriteAllText((Join-Path $PWD 'artifacts/release/SHA256SUMS.txt'), "$hash  AI-Usage-Monitor-win-x64.exe`n")
+          Copy-Item -LiteralPath 'RELEASE_NOTES.md' -Destination 'artifacts/release/RELEASE_NOTES.md'
       - uses: actions/upload-artifact@v4
         with:
           name: windows-release
           path: |
             artifacts/release/AI-Usage-Monitor-win-x64.exe
             artifacts/release/SHA256SUMS.txt
+            artifacts/release/RELEASE_NOTES.md
           if-no-files-found: error
 
   release:
@@ -67,7 +69,7 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           $tag = $env:RELEASE_TAG
-          gh release create $tag 'release/AI-Usage-Monitor-win-x64.exe' 'release/SHA256SUMS.txt' --verify-tag --draft --title $tag --generate-notes
+          gh release create $tag 'release/AI-Usage-Monitor-win-x64.exe' 'release/SHA256SUMS.txt' --verify-tag --draft --title $tag --notes-file 'release/RELEASE_NOTES.md'
           if ($LASTEXITCODE -ne 0) { throw 'Release creation failed; inspect any existing draft before retrying' }
           # A draft is visible in the authenticated release list before it is accessible by tag.
           $releaseId = gh api --paginate "repos/$env:GH_REPO/releases?per_page=100" --jq ".[] | select(.draft == true and .tag_name == `"$tag`") | .id"

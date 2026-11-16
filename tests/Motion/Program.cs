@@ -41,37 +41,9 @@ internal static class Program
             previous.Dispose();
             Console.WriteLine($"{name}: 20ms frame changes {changed}/{comparisons}");
             Check(changed == comparisons, name + " 20ms 간격의 서브픽셀 모션");
-            bool clearOfPlan = true;
-            var overlapRows = new HashSet<int>();
-            int maxBrandOverlap = 0;
-            using var planMask = new Bitmap(74, 50);
-            using (var graphics = Graphics.FromImage(planMask))
-            using (var font = new Font("Segoe UI", 10, FontStyle.Bold, GraphicsUnit.Pixel))
-            {
-                graphics.Clear(background);
-                graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
-                typeof(MonitorForm).GetMethod("DrawText", BindingFlags.Static | BindingFlags.NonPublic)!
-                    .Invoke(null, new object[] { graphics, name == "Codex" ? "Pro" : "Max 20x", font, Color.FromArgb(207, 217, 228), new RectangleF(2, 38, 68, 10), true });
-            }
-            for (int step = 0; step < 90; step++)
-            {
-                using var frame = Render(form, name, step * .02, true);
-                for (int y = 38; y < frame.Height; y++)
-                    for (int x = 0; x < frame.Width; x++)
-                    {
-                        bool overlap = frame.GetPixel(x, y).ToArgb() != background.ToArgb()
-                            && planMask.GetPixel(x, y).ToArgb() != background.ToArgb();
-                        clearOfPlan &= !overlap;
-                        if (overlap)
-                        {
-                            overlapRows.Add(y);
-                            maxBrandOverlap = Math.Max(maxBrandOverlap, Math.Abs(frame.GetPixel(x, y).G - background.G));
-                        }
-                    }
-            }
-            Console.WriteLine($"{name}: overlap rows={string.Join(',', overlapRows)}, max green coverage={maxBrandOverlap}/183");
-            Check(clearOfPlan, name + " 요금제 실제 글자 픽셀과 겹침 없음");
+            CheckPlanSpacing(form, name);
         }
+        if (!legacy) CheckScaling(form);
         settings.VisualEffects = false;
         effects = false;
         using var offA = Render(form, "Codex", 0, true);
@@ -85,11 +57,43 @@ internal static class Program
     private static bool legacy;
     private static bool effects = true;
 
-    private static Bitmap Render(MonitorForm form, string name, double phase, bool plan)
+    private static void CheckPlanSpacing(MonitorForm form, string name)
     {
-        var bitmap = new Bitmap(74, 50, PixelFormat.Format32bppPArgb);
+        foreach (string plan in new[] { "Pro Lite", "Max 20x", "Team", "Enterprise" })
+        {
+            using var planMask = new Bitmap(74, 50);
+            using (var graphics = Graphics.FromImage(planMask))
+            using (var font = new Font("Segoe UI", 8.5f, FontStyle.Bold, GraphicsUnit.Pixel))
+            {
+                graphics.Clear(background);
+                graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+                typeof(MonitorForm).GetMethod("DrawText", BindingFlags.Static | BindingFlags.NonPublic)!
+                    .Invoke(null, new object[] { graphics, plan, font, Color.FromArgb(207, 217, 228), new RectangleF(2, 39, 68, 8), true });
+            }
+            var planPixels = new List<Point>();
+            for (int y = 0; y < planMask.Height; y++)
+                for (int x = 0; x < planMask.Width; x++)
+                    if (planMask.GetPixel(x, y).ToArgb() != background.ToArgb()) planPixels.Add(new Point(x, y));
+            bool clearOfPlan = true;
+            for (int step = 0; step < 90; step++)
+            {
+                using var frame = Render(form, name, step * .02, true);
+                clearOfPlan &= planPixels.All(point => frame.GetPixel(point.X, point.Y).ToArgb() == background.ToArgb());
+            }
+            int firstRow = planPixels.Count == 0 ? -1 : planPixels.Min(point => point.Y);
+            int lastRow = planPixels.Count == 0 ? -1 : planPixels.Max(point => point.Y);
+            Console.WriteLine($"{name}/{plan}: plan ink rows={firstRow}..{lastRow}");
+            Check(clearOfPlan && planPixels.Count > 0, name + "/" + plan + " 브랜드와 실제 글자 겹침 없음");
+            Check(planPixels.Count > 0 && lastRow < 47, name + "/" + plan + " 하단 테두리(y>=47) 침범 없음");
+        }
+    }
+
+    private static Bitmap Render(MonitorForm form, string name, double phase, bool plan, float scale = 1)
+    {
+        var bitmap = new Bitmap((int)Math.Ceiling(74 * scale), (int)Math.Ceiling(50 * scale), PixelFormat.Format32bppPArgb);
         using var graphics = Graphics.FromImage(bitmap);
         graphics.Clear(background);
+        graphics.ScaleTransform(scale, scale);
         graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
         var area = new RectangleF(3, plan ? 28 : 31, 66, 13);
         if (legacy && effects)
@@ -111,11 +115,70 @@ internal static class Program
         return bitmap;
     }
 
+    private static System.Collections.IDictionary Cache(MonitorForm form) =>
+        (System.Collections.IDictionary)typeof(MonitorForm).GetField("brandGlyphs", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(form)!;
+
+    private static Bitmap[] Images(MonitorForm form) => Cache(form).Values.Cast<Array>()
+        .SelectMany(glyphs => glyphs.Cast<object>())
+        .Select(glyph => (Bitmap)glyph.GetType().GetField("Item1")!.GetValue(glyph)!).ToArray();
+
+    private static bool Disposed(Bitmap image)
+    {
+        try { image.GetPixel(0, 0); return false; }
+        catch (ArgumentException) { return true; }
+    }
+
+    private static void CheckScaling(MonitorForm form)
+    {
+        void Populate(float scale)
+        {
+            using var codex = Render(form, "Codex", .2, true, scale);
+            using var claude = Render(form, "Claude", .2, true, scale);
+        }
+        Populate(1);
+        var logicalSizes = Images(form).Select(image => image.Size).ToArray();
+        foreach (int scale in new[] { 2, 3 })
+        {
+            var old = Images(form);
+            Populate(scale);
+            var resized = Images(form);
+            bool proportional = resized.Length == logicalSizes.Length;
+            for (int i = 0; i < Math.Min(resized.Length, logicalSizes.Length); i++)
+                proportional &= Math.Abs(resized[i].Width - logicalSizes[i].Width * scale) <= scale
+                    && Math.Abs(resized[i].Height - logicalSizes[i].Height * scale) <= scale;
+            Console.WriteLine($"scale={scale}: first glyph={resized[0].Width}x{resized[0].Height}, base={logicalSizes[0].Width}x{logicalSizes[0].Height}");
+            Check(proportional, $"{scale}배 확대 글리프 캐시가 실제 해상도에 비례");
+            Check(old.All(Disposed), $"{scale}배 확대 시 이전 배율 캐시 해제");
+            using var first = Render(form, "Codex", .2, true, scale);
+            using var second = Render(form, "Codex", .22, true, scale);
+            Check(!Equal(first, second), $"{scale}배 확대에서도 20ms 서브픽셀 모션 유지");
+        }
+        Populate(1.01f);
+        var sameBucket = Images(form);
+        Populate(1.2f);
+        Check(sameBucket.SequenceEqual(Images(form)), "같은 0.25 배율 구간에서 캐시 재사용");
+        bool bounded = true;
+        bool previousDisposed = true;
+        long maxBytes = 0;
+        for (int index = 0; index < 30; index++)
+        {
+            var previous = Images(form);
+            Populate(1 + index % 9 * .25f);
+            var current = Images(form);
+            previousDisposed &= previous.All(Disposed);
+            long bytes = current.Sum(image => (long)image.Width * image.Height * 4);
+            maxBytes = Math.Max(maxBytes, bytes);
+            bounded &= current.Length == 11 && bytes < 16384 * 9;
+        }
+        Check(previousDisposed, "연속 크기 변경 시 교체된 모든 Bitmap 해제");
+        Check(bounded, $"30회 크기 변경 후 현재 배율 캐시만 보관 (최대 {maxBytes}바이트)");
+        Populate(1);
+    }
+
     private static void CheckCache(MonitorForm form)
     {
-        var cache = (System.Collections.IDictionary)typeof(MonitorForm).GetField("brandGlyphs", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(form)!;
-        var images = cache.Values.Cast<Array>().SelectMany(glyphs => glyphs.Cast<object>())
-            .Select(glyph => (Bitmap)glyph.GetType().GetField("Item1")!.GetValue(glyph)!).ToArray();
+        var cache = Cache(form);
+        var images = Images(form);
         bool premultiplied = true;
         bool padded = true;
         int bytes = 0;
@@ -141,11 +204,7 @@ internal static class Program
         Check(padded, "보간용 글리프 가장자리 투명 패딩");
         Check(images.Length == 11 && bytes < 16384, $"작은 캐시 재사용: {images.Length}개, {bytes}바이트");
         form.Dispose();
-        bool disposed = images.All(image =>
-        {
-            try { image.GetPixel(0, 0); return false; }
-            catch (ArgumentException) { return true; }
-        });
+        bool disposed = images.All(Disposed);
         Check(disposed && cache.Count == 0, "창 해제 시 캐시 Bitmap Dispose 및 비우기");
     }
 
