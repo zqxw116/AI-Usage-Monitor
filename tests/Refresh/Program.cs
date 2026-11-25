@@ -13,6 +13,25 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.SequenceEqual(new[] { "--character-motion" }))
+        {
+            CharacterVisitChecks.Run(Check);
+            CharacterRoamingChecks.Run(Check);
+            return failed == 0 ? 0 : 1;
+        }
+        if (args.SequenceEqual(new[] { "--character-pointer" }))
+        {
+            CharacterPointerRegressionChecks.Run(Check, physicalInput: true);
+            return failed == 0 ? 0 : 1;
+        }
+        if (args.SequenceEqual(new[] { "--character-interaction" }))
+        {
+            string path = Path.Combine(Path.GetTempPath(), "AIUsageInteraction-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(path);
+            try { CharacterInteractionChecks.Run(path, Check); CharacterDragChecks.Run(path, Check); CharacterPointerRegressionChecks.Run(Check); }
+            finally { Directory.Delete(path, true); }
+            return failed == 0 ? 0 : 1;
+        }
         if (args.SequenceEqual(new[] { "--character-rendering" }))
         {
             CharacterRenderingChecks.Run(Check);
@@ -29,7 +48,8 @@ internal static class Program
         {
             string path = Path.Combine(Path.GetTempPath(), "AIUsageCharacters-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(path);
-            try { CharacterDisplayChecks.Run(path, Check); CharacterVisitChecks.Run(Check); CharacterRoamingChecks.Run(Check); CharacterRenderingChecks.Run(Check); }
+            try { CharacterDisplayChecks.Run(path, Check); CharacterVisitChecks.Run(Check); CharacterRoamingChecks.Run(Check); CharacterRenderingChecks.Run(Check);
+                CharacterInteractionChecks.Run(path, Check); CharacterDragChecks.Run(path, Check); CharacterPointerRegressionChecks.Run(Check); }
             finally { Directory.Delete(path, true); }
             return failed == 0 ? 0 : 1;
         }
@@ -88,6 +108,9 @@ internal static class Program
             CharacterVisitChecks.Run(Check);
             CharacterRoamingChecks.Run(Check);
             CharacterRenderingChecks.Run(Check);
+            CharacterInteractionChecks.Run(directory, Check);
+            CharacterDragChecks.Run(directory, Check);
+            CharacterPointerRegressionChecks.Run(Check);
         }
         finally { Directory.Delete(directory, true); }
         Console.WriteLine($"RESULT failed={failed}");

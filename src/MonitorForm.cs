@@ -5,7 +5,7 @@ using DisplayLimits = UsageMonitor.DesktopBounds;
 
 namespace UsageMonitor;
 
-internal sealed class MonitorForm : Form
+internal sealed partial class MonitorForm : Form
 {
     private const int ServiceWidth = 500;
     private const int RowHeight = 50;
@@ -36,6 +36,7 @@ internal sealed class MonitorForm : Form
     private readonly CharacterRoaming roaming = new();
     private bool roamingInitialized;
     private double roamingTime;
+    private bool trackReverse;
     private bool DesktopCharacter => settings.CharacterDisplay is CharacterDisplay.FreeRoam or CharacterDisplay.FollowMouse;
     internal bool CharacterVisitActive => visitStarted is not null;
     private readonly ContextMenuStrip characterMenu = new() { ImageScalingSize = new Size(24, 24) };
@@ -129,6 +130,9 @@ internal sealed class MonitorForm : Form
         FormBorderStyle = FormBorderStyle.None;
         MaximizeBox = false;
         displayedDesign = DesignSize;
+        if (this.settings.CharacterDisplay == CharacterDisplay.Both) this.settings.CharacterDisplay = CharacterDisplay.Inside;
+        orangeDistance = this.settings.CharacterTrackDistance * orange.Perimeter(DesignSize);
+        trackReverse = this.settings.CharacterFacingLeft;
         ClientSize = displayedDesign;
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Background;
@@ -152,17 +156,29 @@ internal sealed class MonitorForm : Form
         characterMenu.Items.Add(CreateCharacterDisplayMenu());
         LocationChanged += (_, _) => UpdateOutsideCharacter();
         ClientSizeChanged += (_, _) => UpdateOutsideCharacter();
-        VisibleChanged += (_, _) => UpdateOutsideCharacter();
+        VisibleChanged += (_, _) => { if (!Visible) CancelCharacterPress(); UpdateOutsideCharacter(); };
+        FormClosing += (_, _) => { CancelCharacterPress(); SaveCharacterPlacement(); };
+        Deactivate += (_, _) => { if (characterPress is not null && !dragWasOutside && !updatingCharacterOverlay) CancelCharacterPress(); };
         if (live) CreateTray();
         orangeTimer.Tick += (_, _) =>
         {
 
             var before = orange.PoseAt(orangeDistance, DesignSize).Bounds;
             double now = orangeClock.Elapsed.TotalSeconds;
-            if (!CharacterVisitActive) orangeDistance += (now - orangeTime) * 40;
+            if (!CharacterVisitActive && characterPress is null) orangeDistance += (now - orangeTime) * (trackReverse ? -40 : 40);
             orangeTime = now;
             var after = orange.PoseAt(orangeDistance, DesignSize).Bounds;
             var damage = RectangleF.Union(before, after);
+            var reactionBounds = RectangleF.Empty;
+            if (CurrentCharacterEffect != CharacterEffect.None)
+            {
+                var reactionPose = orange.PoseAt(orangeDistance, DesignSize);
+                reactionBounds = CharacterVisual.Bounds(reactionPose.Center, orange.Height(DesignSize), reactionPose.Angle,
+                    CurrentCharacterEffect, CurrentCharacterReactionProgress);
+                damage = RectangleF.Union(damage, reactionBounds);
+            }
+            if (!reactionDamage.IsEmpty) damage = RectangleF.Union(damage, reactionDamage);
+            reactionDamage = CurrentCharacterEffect == CharacterEffect.None ? RectangleF.Empty : reactionBounds;
             float sx = ClientSize.Width / (float)DesignSize.Width, sy = ClientSize.Height / (float)DesignSize.Height;
             var region = Rectangle.Ceiling(new RectangleF(damage.X * sx, damage.Y * sy, damage.Width * sx, damage.Height * sy));
             region.Inflate(2, 2);
@@ -262,6 +278,8 @@ internal sealed class MonitorForm : Form
     internal void SelectCharacter(int index)
     {
         if (selectedCharacter == index) return;
+        ClearCharacterHover();
+        CancelCharacterPress();
         double fraction = orangeDistance / orange.Perimeter(DesignSize);
         var replacement = new OrangeWalker(OrangeWalker.Characters[index], orange.PreferredSize);
         orange.Dispose();
@@ -279,7 +297,7 @@ internal sealed class MonitorForm : Form
     {
         var menu = new ToolStripMenuItem("캐릭터 표시 위치");
         foreach (var (mode, name) in new[] { (CharacterDisplay.None, "끔"), (CharacterDisplay.Inside, "내부만"),
-            (CharacterDisplay.Outside, "외부만"), (CharacterDisplay.Both, "내부 + 외부"),
+            (CharacterDisplay.Outside, "외부만"),
             (CharacterDisplay.FreeRoam, "자유 이동"), (CharacterDisplay.FollowMouse, "마우스 따라가기") })
         {
             var item = new ToolStripMenuItem(name) { Tag = mode };
@@ -297,6 +315,9 @@ internal sealed class MonitorForm : Form
     internal void SetCharacterDisplay(CharacterDisplay mode)
     {
         if (!Enum.IsDefined(mode)) return;
+        if (mode == CharacterDisplay.Both) mode = CharacterDisplay.Inside;
+        ClearCharacterHover();
+        CancelCharacterPress();
         visitStarted = null;
         outsideCharacter?.ReleaseVisitSurface();
         roamingInitialized = false;
@@ -318,7 +339,7 @@ internal sealed class MonitorForm : Form
             roamingTime = orangeTime;
             Invalidate();
         }
-        if (!Visible || (!CharacterVisitActive && !DesktopCharacter && !settings.CharacterDisplay.HasFlag(CharacterDisplay.Outside)))
+        if (!Visible || (!draggingCharacter && !CharacterVisitActive && !DesktopCharacter && !settings.CharacterDisplay.HasFlag(CharacterDisplay.Outside)))
         {
             outsideCharacter?.Hide();
             return;
@@ -326,13 +347,26 @@ internal sealed class MonitorForm : Form
         if (outsideCharacter is null)
         {
             outsideCharacter = new OutsideCharacterForm();
-            outsideCharacter.CharacterClicked += () => BeginCharacterVisit(fromOutside: true);
+            outsideCharacter.PointerPressed += point => BeginCharacterPress(point, fromOutside: true);
+            outsideCharacter.PointerMoved += MoveCharacterPress;
+            outsideCharacter.PointerReleased += EndCharacterPress;
+            outsideCharacter.PointerCanceled += CancelCharacterPress;
+            outsideCharacter.BodyHoverChanged += SetCharacterHover;
         }
-        outsideCharacter.ClickThrough = settings.CharacterDisplay == CharacterDisplay.FollowMouse;
+        outsideCharacter.ClickThrough = false;
+        if (draggingCharacter)
+        {
+            outsideCharacter.UpdatePose(this, orange, dragCenter, orange.Height(DesignSize) * ClientSize.Width / DesignSize.Width,
+                0, DesktopCharacter ? roaming.AnimationSeconds : orangeTime, SystemInformation.VirtualScreen, smooth: true,
+                mirrorX: dragFacingLeft, effect: CurrentCharacterEffect, reactionProgress: CurrentCharacterReactionProgress);
+            return;
+        }
         if (DesktopCharacter && !roamingInitialized)
         {
-            var start = PointToScreen(new Point(ClientSize.Width / 2, 0));
+            var start = settings.CharacterDesktopX is float savedX && settings.CharacterDesktopY is float savedY
+                ? new PointF(savedX, savedY) : PointToScreen(new Point(ClientSize.Width / 2, 0));
             roaming.Reset(start);
+            roaming.Relocate(start, settings.CharacterFacingLeft);
             roaming.Step(.001, Screen.FromControl(this).WorkingArea, orange.Height(DesignSize) * ClientSize.Width / DesignSize.Width);
             roamingTime = orangeTime;
             roamingInitialized = true;
@@ -341,8 +375,7 @@ internal sealed class MonitorForm : Form
         {
             var design = DesignSize;
             float scale = ClientSize.Width / (float)design.Width;
-            double fraction = orangeDistance / orange.Perimeter(design);
-            var pose = orange.PoseAt(visitFromOutside ? fraction * orange.Perimeter(design, true) : orangeDistance, design, visitFromOutside);
+            var pose = AttachedCharacterPose(visitFromOutside);
             var origin = PointToScreen(Point.Empty);
             var center = new PointF(origin.X + pose.Center.X * scale, origin.Y + pose.Center.Y * scale);
             float spriteSize = orange.Height(design) * scale;
@@ -352,29 +385,44 @@ internal sealed class MonitorForm : Form
                 pose = pose with { Angle = 0 };
                 roamingTime = orangeTime;
             }
-            var area = DesktopCharacter ? Screen.FromPoint(Point.Round(center)).WorkingArea : Screen.FromControl(this).WorkingArea;
-            var visit = CharacterVisit.PoseAt(orangeTime - visitStarted!.Value, center, spriteSize, pose.Angle, area, orange.Face);
+            var area = Screen.FromPoint(Point.Round(center)).WorkingArea;
+            var visit = CharacterVisit.PoseAt(orangeTime - visitStarted!.Value, center, spriteSize, pose.Angle, area, orange.Face,
+                mirrorX: DesktopCharacter ? roaming.FacingLeft : trackReverse);
             outsideCharacter.UpdatePose(this, orange, visit.Center, visit.Size, visit.Angle, visitStarted.Value, area, smooth: true, visiting: true,
-                mirrorX: DesktopCharacter && roaming.FacingLeft);
+                mirrorX: DesktopCharacter ? roaming.FacingLeft : trackReverse);
         }
         else if (DesktopCharacter)
         {
             PointF? pointer = settings.CharacterDisplay == CharacterDisplay.FollowMouse ? Cursor.Position : null;
-            var area = pointer is not null ? DisplayLimits.Envelope(WorkAreas) : Screen.FromControl(this).WorkingArea;
+            var area = pointer is not null && !roaming.Nearby ? DisplayLimits.Envelope(WorkAreas) : Screen.FromPoint(Point.Round(roaming.Position)).WorkingArea;
             float spriteSize = orange.Height(DesignSize) * ClientSize.Width / DesignSize.Width;
             Rectangle? pointerArea = pointer is { } cursor ? Screen.FromPoint(Point.Round(cursor)).WorkingArea : null;
-            var center = roaming.Step(orangeTime - roamingTime, area, spriteSize, pointer, pointerArea);
+            var center = characterPress is null ? roaming.Step(orangeTime - roamingTime, area, spriteSize, pointer, pointerArea,
+                orange.NormalizedBodyBounds) : roaming.Position;
+            if (CurrentCharacterEffect != CharacterEffect.None)
+            {
+                center = CharacterVisual.FitCenter(center, spriteSize, 0, CurrentCharacterEffect,
+                    Screen.FromPoint(Point.Round(center)).WorkingArea, CurrentCharacterReactionProgress);
+                roaming.ConstrainPosition(center);
+            }
             roamingTime = orangeTime;
-            outsideCharacter.UpdatePose(this, orange, center, spriteSize, 0, orangeTime, SystemInformation.VirtualScreen, smooth: true,
-                mirrorX: roaming.FacingLeft);
+            outsideCharacter.UpdatePose(this, orange, center, spriteSize, 0, roaming.AnimationSeconds, SystemInformation.VirtualScreen, smooth: true,
+                mirrorX: roaming.FacingLeft, effect: CurrentCharacterEffect, reactionProgress: CurrentCharacterReactionProgress);
         }
-        else outsideCharacter.UpdateCharacter(this, orange, DesignSize, orangeTime, orangeDistance);
+        else
+        {
+            float scale = ClientSize.Width / (float)DesignSize.Width;
+            var pose = AttachedCharacterPose(true);
+            var origin = PointToScreen(Point.Empty);
+            outsideCharacter.UpdatePose(this, orange, new PointF(origin.X + pose.Center.X * scale, origin.Y + pose.Center.Y * scale),
+                orange.Height(DesignSize) * scale, pose.Angle, orangeTime, SystemInformation.VirtualScreen, mirrorX: trackReverse,
+                effect: CurrentCharacterEffect, reactionProgress: CurrentCharacterReactionProgress);
+        }
     }
 
     internal bool BeginCharacterVisit(bool fromOutside = false)
     {
         if (!Visible || settings.CharacterDisplay == CharacterDisplay.None || CharacterVisitActive) return false;
-        if (fromOutside && settings.CharacterDisplay == CharacterDisplay.FollowMouse) return false;
         visitStarted = orangeTime;
         visitFromOutside = fromOutside || settings.CharacterDisplay == CharacterDisplay.Outside;
         UpdateOutsideCharacter();
@@ -388,7 +436,8 @@ internal sealed class MonitorForm : Form
         for (int button = toolsExpanded ? 0 : 8; button < 9; button++)
             if (ButtonBounds(button).Contains(point)) return false;
         var pose = orange.PoseAt(orangeDistance, DesignSize);
-        return orange.HitTestSprite(point, pose.Center, pose.Angle, orangeTime, orange.Height(DesignSize));
+        return orange.HitTestSprite(point, pose.Center, pose.Angle, orangeTime, orange.Height(DesignSize), mirrorX: trackReverse,
+            effect: CurrentCharacterEffect, reactionProgress: CurrentCharacterReactionProgress);
     }
 
     internal void CreateTray()
@@ -654,6 +703,7 @@ internal sealed class MonitorForm : Form
             bool top = point.Y < grip, bottom = point.Y >= ClientSize.Height - grip;
             int hit = top && left ? 13 : top && right ? 14 : bottom && left ? 16 : bottom && right ? 17 :
                 left ? 10 : right ? 11 : top ? 12 : bottom ? 15 : 1;
+            if (characterPress is not null || HitInsideCharacter(LogicalPoint(point))) hit = 1;
             message.Result = (IntPtr)hit;
         }
         else if (message.Msg == 0x24) // WM_GETMINMAXINFO
@@ -688,9 +738,13 @@ internal sealed class MonitorForm : Form
             DrawService(g, source, bounds.X, bounds.Y,
                 RemainingColor(100, source.Kind), source.Name);
         }
-        if (EnabledCount == 0)
-            DrawText(g, "메뉴에서 서비스를 선택하세요", valueFont, LabelColor, new RectangleF(10, 10, ServiceAreaWidth - 20, 30), true);
-        if (!CharacterVisitActive && settings.CharacterDisplay.HasFlag(CharacterDisplay.Inside)) orange.Draw(g, size, orangeTime, orangeDistance);
+        if (!draggingCharacter && !CharacterVisitActive && settings.CharacterDisplay.HasFlag(CharacterDisplay.Inside))
+        {
+            var pose = orange.PoseAt(orangeDistance, size);
+            orange.DrawSprite(g, pose.Center, pose.Angle, orangeTime, orange.Height(size), mirrorX: trackReverse,
+                effect: CurrentCharacterEffect, reactionProgress: CurrentCharacterReactionProgress,
+                alertClip: new RectangleF(PointF.Empty, size));
+        }
         if (toolsExpanded)
         {
             DrawButton(g, 0, "", TopMost);
@@ -1019,8 +1073,11 @@ internal sealed class MonitorForm : Form
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        if (characterPress is not null) { MoveCharacterPress(PointToScreen(e.Location)); return; }
         var point = LogicalPoint(e.Location);
-        if (HitInsideCharacter(point))
+        bool overCharacter = HitInsideCharacter(point);
+        SetCharacterHover(overCharacter);
+        if (overCharacter)
         {
             Cursor = Cursors.Hand;
             hoverPart = -20;
@@ -1050,7 +1107,7 @@ internal sealed class MonitorForm : Form
         if (e.Button == MouseButtons.Right) { ShowConnections(); return; }
         if (e.Button != MouseButtons.Left) return;
         var point = LogicalPoint(e.Location);
-        if (HitInsideCharacter(point)) { BeginCharacterVisit(); return; }
+        if (HitInsideCharacter(point)) { BeginCharacterPress(PointToScreen(e.Location), fromOutside: false); return; }
         for (int i = toolsExpanded ? 0 : 8; i < 9; i++)
         {
             if (!ButtonBounds(i).Contains(point)) continue;
@@ -1077,6 +1134,7 @@ internal sealed class MonitorForm : Form
             timer.Dispose(); tooltip.Dispose();
             connections?.Close();
             outsideCharacter?.Dispose();
+            snapPreview?.Dispose();
             orangeTimer.Dispose(); orangeClock.Stop(); orange.Dispose();
             trayIcon?.Dispose(); trayMenu?.Dispose(); characterMenu.Dispose();
             foreach (var icon in characterIcons) icon.Dispose();

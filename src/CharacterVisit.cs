@@ -10,13 +10,15 @@ internal static class CharacterVisit
     internal const double Duration = ExpandDuration + HoldDuration + ReturnDuration;
 
     internal static CharacterVisitPose PoseAt(double elapsed, PointF origin, float originalSize,
-        float originalAngle, Rectangle workingArea, RectangleF face)
+        float originalAngle, Rectangle workingArea, RectangleF face, bool mirrorX = false)
     {
         var original = new CharacterVisitPose(origin, originalSize, originalAngle);
         if (elapsed <= 0 || elapsed >= Duration) return original;
-        var target = TargetBounds(workingArea);
-        float size = Math.Min(target.Width, target.Height);
-        var center = new PointF(target.Left + target.Width / 2, target.Top + target.Height / 2);
+        float size = Math.Max(originalSize, Math.Min(workingArea.Width * .45f / face.Width, workingArea.Height * .45f / face.Height));
+        float faceCenterX = face.Left + face.Width / 2;
+        if (mirrorX) faceCenterX = 1 - faceCenterX;
+        var center = new PointF(workingArea.Left + workingArea.Width / 2f - (faceCenterX - .5f) * size,
+            workingArea.Top + workingArea.Height / 2f - (face.Top + face.Height / 2 - .5f) * size);
         var close = new CharacterVisitPose(center, size, 0);
         if (elapsed < ExpandDuration)
         {
@@ -27,10 +29,6 @@ internal static class CharacterVisit
         double returning = (elapsed - ExpandDuration - HoldDuration) / ReturnDuration;
         return Blend(close, original, returning * returning * returning);
     }
-
-    internal static RectangleF TargetBounds(Rectangle workingArea) => new(
-        workingArea.Left + workingArea.Width * (688f / 1911), workingArea.Top + workingArea.Height * (464f / 1083),
-        workingArea.Width * (702f / 1911), workingArea.Height * (619f / 1083));
 
     private static CharacterVisitPose Blend(CharacterVisitPose from, CharacterVisitPose to, double progress)
     {

@@ -47,6 +47,7 @@ internal static class CharacterDisplayChecks
         foreach (var mode in Enum.GetValues<CharacterDisplay>())
         {
             form.SetCharacterDisplay(mode);
+            var effectiveMode = mode == CharacterDisplay.Both ? CharacterDisplay.Inside : mode;
             Application.DoEvents();
             using var image = Capture();
             bool hasInside = false;
@@ -54,13 +55,13 @@ internal static class CharacterDisplayChecks
             for (int x = 0; x < image.Width && !hasInside; x++)
                 hasInside = image.GetPixel(x, y) != empty.GetPixel(x, y);
             var overlay = form.OwnedForms.OfType<OutsideCharacterForm>().SingleOrDefault();
-            check(hasInside == mode.HasFlag(CharacterDisplay.Inside), mode + " 내부 렌더링 선택 반영");
-            check((overlay?.Visible == true) == (mode is CharacterDisplay.FreeRoam or CharacterDisplay.FollowMouse || mode.HasFlag(CharacterDisplay.Outside)), mode + " 외부 렌더링 선택 반영");
+            check(hasInside == effectiveMode.HasFlag(CharacterDisplay.Inside), mode + " 내부 렌더링 선택 반영");
+            check((overlay?.Visible == true) == (effectiveMode is CharacterDisplay.FreeRoam or CharacterDisplay.FollowMouse || effectiveMode.HasFlag(CharacterDisplay.Outside)), mode + " 외부 렌더링 선택 반영");
             settings.Save(path);
-            check(MonitorSettings.Load(path).CharacterDisplay == mode, mode + " 재실행용 설정 저장");
+            check(MonitorSettings.Load(path).CharacterDisplay == effectiveMode, mode + " 재실행용 설정 저장");
             check(form.Size == original, mode + " 본체 창 크기 유지");
         }
-        form.SetCharacterDisplay(CharacterDisplay.Both);
+        form.SetCharacterDisplay(CharacterDisplay.Outside);
         var outside = form.OwnedForms.OfType<OutsideCharacterForm>().Single();
         if (backdrop is not null)
         {
@@ -86,7 +87,7 @@ internal static class CharacterDisplayChecks
                     screen.CopyFromScreen(area.Location, Point.Empty, area.Size);
                 output.DrawImageUnscaled(screenshot, 0, edge * area.Height);
             }
-            strip.Save(Path.Combine(directory, "캐릭터 내부+외부 네 방향.png"));
+            strip.Save(Path.Combine(directory, "캐릭터 외부 네 방향.png"));
             backdrop.Hide();
             form.PreviewOrange(.08, 0);
         }
@@ -103,6 +104,8 @@ internal static class CharacterDisplayChecks
         check(opaque is not null && transparent is not null, "외부 캐릭터의 실제 그림만 클릭 가능하고 여백은 클릭 통과");
         var click = outside.PointToClient(opaque!.Value);
         MonitorForm.SendMessage(outside.Handle, 0x201, (IntPtr)1, (IntPtr)((click.Y << 16) | (click.X & 0xffff)));
+        click = outside.PointToClient(opaque.Value);
+        MonitorForm.SendMessage(outside.Handle, 0x202, IntPtr.Zero, (IntPtr)((click.Y << 16) | (click.X & 0xffff)));
         check(form.CharacterVisitActive, "외부 캐릭터 클릭으로 가까이 보기 시작");
         form.PreviewOrange(.08, 3.1);
         form.SetCharacterDisplay(CharacterDisplay.Inside);
@@ -123,7 +126,7 @@ internal static class CharacterDisplayChecks
             check(form.ToolsExpanded && !form.CharacterVisitActive, "가려진 캐릭터 대신 화면에 보이는 메뉴 버튼이 클릭됨");
             if (form.ToolsExpanded) form.ToggleTools();
         }
-        form.SetCharacterDisplay(CharacterDisplay.Both);
+        form.SetCharacterDisplay(CharacterDisplay.Outside);
         form.PreviewOrange(.08, 3.1);
         var foreground = GetForegroundWindow();
         Point before = outside.Location;
@@ -157,18 +160,20 @@ internal static class CharacterDisplayChecks
             float scale = form.ClientSize.Width / (float)form.DesignSize.Width;
             MonitorForm.SendMessage(form.Handle, 0x201, (IntPtr)1,
                 (IntPtr)(((int)(point.Y * scale) << 16) | ((int)(point.X * scale) & 0xffff)));
+            MonitorForm.SendMessage(form.Handle, 0x202, IntPtr.Zero,
+                (IntPtr)(((int)(point.Y * scale) << 16) | ((int)(point.X * scale) & 0xffff)));
             check(form.CharacterVisitActive, "내부 캐릭터 클릭으로 가까이 보기 시작");
             var origin = form.PointToScreen(Point.Empty);
             var center = new PointF(origin.X + pose.Center.X * scale, origin.Y + pose.Center.Y * scale);
-            check(Math.Abs(outside.Left + outside.Width / 2f - center.X) <= 1 &&
-                Math.Abs(outside.Top + outside.Height / 2f - center.Y) <= 1,
+            PointF RenderedCenter() => (PointF)typeof(OutsideCharacterForm).GetField("hitCenter", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(outside)!;
+            float RenderedSize() => (float)typeof(OutsideCharacterForm).GetField("hitSize", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(outside)!;
+            check(Math.Abs(RenderedCenter().X - center.X) <= 1 && Math.Abs(RenderedCenter().Y - center.Y) <= 1,
                 "내부 클릭 확대는 화면 밖 이동 없이 클릭한 캐릭터 중심에서 시작");
             form.PreviewOrange(.1, .05);
             var expected = CharacterVisit.PoseAt(.05, center, form.OrangeHeight * scale, pose.Angle,
-                Screen.FromControl(form).WorkingArea, duck.Face);
-            check(Math.Abs(outside.Left + outside.Width / 2f - expected.Center.X) <= 1 &&
-                Math.Abs(outside.Top + outside.Height / 2f - expected.Center.Y) <= 1 &&
-                outside.Width > form.OrangeHeight * scale + 2,
+                Screen.FromPoint(Point.Round(center)).WorkingArea, duck.Face);
+            check(Math.Abs(RenderedCenter().X - expected.Center.X) <= 1 &&
+                Math.Abs(RenderedCenter().Y - expected.Center.Y) <= 1 && RenderedSize() > form.OrangeHeight * scale,
                 "내부 클릭 직후 원래 위치에서 크기와 중심이 함께 확대 경로로 이동");
             form.PreviewOrange(.1, CharacterVisit.Duration);
             check(!form.CharacterVisitActive && !outside.Visible, "내부 클릭 2.05초 후 원래 내부 표시로 정확히 복귀");
@@ -180,7 +185,7 @@ internal static class CharacterDisplayChecks
         form.SetCharacterDisplay(CharacterDisplay.None);
         form.SelectCharacter(0);
         check(!form.CharacterVisitActive && !outside.Visible, "캐릭터 끔에서는 변경·클릭 연출 안 함");
-        form.SetCharacterDisplay(CharacterDisplay.Both);
+        form.SetCharacterDisplay(CharacterDisplay.Outside);
         form.TogglePin();
         check(outside.TopMost == form.TopMost, "핀 해제 시 외부 고정도 해제");
         form.TogglePin();
@@ -201,10 +206,58 @@ internal static class CharacterDisplayChecks
         check(!form.CharacterVisitActive && outside.Bounds == roamingBounds, "자유 이동 확대 후 클릭한 위치에 정확히 복귀");
         form.SetCharacterDisplay(CharacterDisplay.FollowMouse);
         MonitorForm.SendMessage(outside.Handle, 0x201, (IntPtr)1, (IntPtr)((outside.Height / 2 << 16) | (outside.Width / 2)));
-        check(outside.ClickThrough && (GetWindowLong(outside.Handle, -20) & 0x20) != 0 && !form.CharacterVisitActive,
-            "마우스 따라가기에서는 모든 클릭 통과·확대 연출 미실행");
-        check(!form.BeginCharacterVisit(fromOutside: true), "마우스 모드에서 잘못 전달된 클릭도 확대 차단");
+        check(!outside.ClickThrough && outside.IsPointerCaptured && (GetWindowLong(outside.Handle, -20) & 0x20) == 0 && !form.CharacterVisitActive,
+            "마우스 따라가기에서도 몸은 잡을 수 있고 누르는 중 확대 연출 미실행");
+        outside.CancelPointer();
+        check(form.BeginCharacterVisit(fromOutside: true), "마우스 따라가기 모드도 일반 짧은 클릭 확대 허용");
+        form.SetCharacterDisplay(CharacterDisplay.FollowMouse);
+        var roaming = (CharacterRoaming)typeof(MonitorForm).GetField("roaming", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(form)!;
+        var simulationArea = new Rectangle(-1000, -1000, 3000, 3000);
+        roaming.Reset(new PointF(100, 100));
+        roaming.Step(1d / 60, simulationArea, 48, new PointF(130, 100));
+        CharacterEffect CurrentEffect() => (CharacterEffect)typeof(MonitorForm)
+            .GetProperty("CurrentCharacterEffect", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(form)!;
+        check(settings.CharacterDisplay == CharacterDisplay.FollowMouse && CurrentEffect() == CharacterEffect.Arrived,
+            "커서 조작 없이 합성 도착 입력에서 Follow 모드를 유지하고 즉시 음표 효과 연결");
+        roaming.Step(1d / 60, simulationArea, 48, new PointF(600, 100));
+        check(settings.CharacterDisplay == CharacterDisplay.FollowMouse && CurrentEffect() == CharacterEffect.Startled,
+            "커서 조작 없이 합성 재추적 입력에서 음표 해제하고 기존 느낌표 효과 복원");
         form.Close();
         check(outside.IsDisposed, "본체 종료 시 외부 창과 자원 정리");
+        CheckAllDisabled(directory, check);
+    }
+
+    private static void CheckAllDisabled(string directory, Action<bool, string> check)
+    {
+        using var codex = new UsageSource(false);
+        using var claude = new UsageSource(true);
+        using var gemini = new UsageSource(ServiceKind.Gemini);
+        var settings = new MonitorSettings { CodexEnabled = false, ClaudeEnabled = false, GeminiEnabled = false,
+            VisualEffects = false, CharacterDisplay = CharacterDisplay.None };
+        using var form = new MonitorForm(codex, claude, false, settings, gemini);
+        form.Show();
+        Application.DoEvents();
+        using var blank = new Bitmap(form.Width, form.Height);
+        form.DrawToBitmap(blank, form.ClientRectangle);
+        bool emptyPanel = true;
+        for (int y = 6; y < blank.Height - 6; y++)
+        for (int x = 6; x < 250; x++) emptyPanel &= blank.GetPixel(x, y).ToArgb() == form.BackColor.ToArgb();
+        check(emptyPanel, "모든 AI 비활성 합성 렌더에서 안내 문구 없이 서비스 영역이 비어 있음");
+        form.SetCharacterDisplay(CharacterDisplay.Inside);
+        form.PreviewOrange(.08, 0);
+        using var character = new Bitmap(form.Width, form.Height);
+        form.DrawToBitmap(character, form.ClientRectangle);
+        bool visibleCharacter = false;
+        for (int y = 6; y < character.Height - 6; y++)
+        for (int x = 6; x < 250; x++) visibleCharacter |= character.GetPixel(x, y) != blank.GetPixel(x, y);
+        check(visibleCharacter, "모든 AI 비활성 상태에서도 내부 캐릭터가 표시됨");
+        character.Save(Path.Combine(directory, "all-services-disabled.png"));
+        var collapsed = form.Size;
+        form.CreateTray();
+        var menu = (ContextMenuStrip)typeof(MonitorForm).GetField("trayMenu", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(form)!;
+        menu.Items.OfType<ToolStripMenuItem>().Single(item => item.Text is string text && text.StartsWith(codex.Name)).PerformClick();
+        check(codex.Enabled && settings.CodexEnabled && form.Width > collapsed.Width,
+            "모든 AI 비활성 뒤에도 설정 메뉴에서 Codex를 다시 켜고 서비스 패널 복원");
+        form.Close();
     }
 }

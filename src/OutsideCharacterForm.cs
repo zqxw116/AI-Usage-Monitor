@@ -7,12 +7,17 @@ namespace UsageMonitor;
 // 캐릭터 주변만 차지하는 알파 투명 소유 창. 투명 여백은 입력을 통과시킵니다.
 internal sealed class OutsideCharacterForm : Form
 {
-    private (OrangeWalker Walker, int Frame, float Angle, float Size, Rectangle Clip, PointF Center, bool Smooth, bool MirrorX)? rendered;
+    private (OrangeWalker Walker, int Frame, float Angle, float Size, Rectangle Clip, PointF Center, bool Smooth, bool MirrorX, CharacterEffect Effect, float Progress)? rendered;
     private OrangeWalker? hitWalker;
     private PointF hitCenter;
     private float hitSize, hitAngle;
     private double hitSeconds;
     private bool hitMirrorX;
+    private CharacterEffect hitEffect;
+    private float hitReactionProgress;
+    private bool bodyHovered;
+    private bool pointerPressed;
+    private readonly System.Windows.Forms.Timer captureTimer = new() { Interval = 33 };
     private bool clickThrough;
     private IntPtr visitDc, visitBitmap, visitPrevious;
     private Bitmap? visitSurface;
@@ -25,11 +30,18 @@ internal sealed class OutsideCharacterForm : Form
         set
         {
             if (clickThrough == value) return;
+            if (value) CancelPointer();
             clickThrough = value;
             if (IsHandleCreated) UpdateStyles();
         }
     }
-    internal event Action? CharacterClicked;
+    internal event Action<Point>? PointerPressed;
+    internal event Action<Point>? PointerMoved;
+    internal event Action<Point>? PointerReleased;
+    internal event Action? PointerCanceled;
+    internal event Action<bool>? BodyHoverChanged;
+    internal bool IsPointerCaptured => pointerPressed;
+    internal PointF DisplayedCenter => hitCenter;
     protected override bool ShowWithoutActivation => true;
     protected override CreateParams CreateParams
     {
@@ -50,6 +62,7 @@ internal sealed class OutsideCharacterForm : Form
         StartPosition = FormStartPosition.Manual;
         Text = "AI 사용량 모니터 · 외부 캐릭터";
         Cursor = Cursors.Hand;
+        captureTimer.Tick += (_, _) => { if ((GetAsyncKeyState(0x1B) & 0x8000) != 0) CancelPointer(); };
     }
 
     internal void UpdateCharacter(Form owner, OrangeWalker walker, Size design, double seconds, double distance)
@@ -62,22 +75,30 @@ internal sealed class OutsideCharacterForm : Form
             walker.Height(design) * scale, pose.Angle, seconds, SystemInformation.VirtualScreen);
     }
 
-    internal void UpdatePose(Form owner, OrangeWalker walker, PointF center, float spriteSize, float angle, double seconds, Rectangle clipping, bool smooth = false, bool visiting = false, bool mirrorX = false)
+    internal void UpdatePose(Form owner, OrangeWalker walker, PointF center, float spriteSize, float angle, double seconds, Rectangle clipping,
+        bool smooth = false, bool visiting = false, bool mirrorX = false, CharacterEffect effect = CharacterEffect.None, float reactionProgress = .25f)
     {
         if (!owner.Visible || owner.WindowState == FormWindowState.Minimized) { Hide(); return; }
         int side = (int)Math.Ceiling(spriteSize) + 2;
         var full = new Rectangle((int)Math.Round(center.X - side / 2f), (int)Math.Round(center.Y - side / 2f), side, side);
+        if (effect != CharacterEffect.None)
+        {
+            full = Rectangle.Ceiling(CharacterVisual.Bounds(center, spriteSize, angle, effect, reactionProgress));
+            full.Inflate(2, 2);
+        }
         // 큰 캐릭터도 화면 밖 픽셀까지 할당하지 않습니다. 창의 크기 상한은 추가하지 않습니다.
         var visible = Rectangle.Intersect(full, clipping);
         if (visible.Width <= 0 || visible.Height <= 0) { Hide(); return; }
         if (TopMost != owner.TopMost) TopMost = owner.TopMost;
         var clip = new Rectangle(visible.X - full.X, visible.Y - full.Y, visible.Width, visible.Height);
-        var localCenter = smooth ? new PointF(center.X - visible.X, center.Y - visible.Y) : new PointF(side / 2f - clip.X, side / 2f - clip.Y);
-        var key = (walker, walker.FrameAt(seconds), angle, spriteSize, clip, localCenter, smooth, mirrorX);
+        var localCenter = smooth || effect != CharacterEffect.None ? new PointF(center.X - visible.X, center.Y - visible.Y) : new PointF(side / 2f - clip.X, side / 2f - clip.Y);
+        var key = (walker, walker.FrameAt(seconds), angle, spriteSize, clip, localCenter, smooth, mirrorX, effect, reactionProgress);
         hitWalker = walker;
         hitCenter = new PointF(visible.X + localCenter.X, visible.Y + localCenter.Y);
         hitSize = spriteSize; hitAngle = angle; hitSeconds = seconds;
         hitMirrorX = mirrorX;
+        hitEffect = effect;
+        hitReactionProgress = reactionProgress;
         if (visiting)
         {
             EnsureVisitSurface(clipping.Size);
@@ -91,7 +112,7 @@ internal sealed class OutsideCharacterForm : Form
                 graphics.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceOver;
                 graphics.SetClip(visibleBuffer);
                 var bufferCenter = new PointF(localCenter.X + visibleBuffer.X, localCenter.Y + visibleBuffer.Y);
-                walker.DrawSprite(graphics, bufferCenter, angle, seconds, spriteSize, smooth, mirrorX);
+                walker.DrawSprite(graphics, bufferCenter, angle, seconds, spriteSize, smooth, mirrorX, effect, reactionProgress);
                 visitDirty = visibleBuffer;
                 graphics.Flush(System.Drawing.Drawing2D.FlushIntention.Sync);
             }
@@ -104,7 +125,7 @@ internal sealed class OutsideCharacterForm : Form
             ReleaseVisitSurface();
             using var surface = new Bitmap(visible.Width, visible.Height, PixelFormat.Format32bppPArgb);
             using (var graphics = Graphics.FromImage(surface))
-                walker.DrawSprite(graphics, localCenter, angle, seconds, spriteSize, smooth, mirrorX);
+                walker.DrawSprite(graphics, localCenter, angle, seconds, spriteSize, smooth, mirrorX, effect, reactionProgress);
             using var dcSurface = CreateTemporaryDc(surface);
             Present(surface.Size, visible.Location, dcSurface.Dc);
             UpdateBounds();
@@ -120,17 +141,75 @@ internal sealed class OutsideCharacterForm : Form
         {
             long packed = message.LParam.ToInt64();
             var point = new PointF(unchecked((short)(packed & 0xffff)), unchecked((short)((packed >> 16) & 0xffff)));
-            message.Result = (IntPtr)(!ClickThrough && hitWalker?.HitTestSprite(point, hitCenter, hitAngle, hitSeconds, hitSize, hitMirrorX) == true ? 1 : -1);
+            message.Result = (IntPtr)(!ClickThrough && HitSprite(point) ? 1 : -1);
             return;
         }
         if (message.Msg == 0x21) { message.Result = (IntPtr)3; return; } // MA_NOACTIVATE
+        if (message.Msg == 0x1F || message.Msg == 0x100 && message.WParam == (IntPtr)0x1B) CancelPointer();
         base.WndProc(ref message);
     }
 
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
-        if (e.Button == MouseButtons.Left && !ClickThrough) CharacterClicked?.Invoke();
+        var point = PointToScreen(e.Location);
+        if (e.Button != MouseButtons.Left || ClickThrough || !HitSprite(point))
+        {
+            if (!pointerPressed) Capture = false;
+            return;
+        }
+        pointerPressed = true;
+        Capture = true;
+        captureTimer.Start();
+        PointerPressed?.Invoke(point);
+    }
+
+    private bool HitSprite(PointF point) => hitWalker?.HitTestSprite(point, hitCenter, hitAngle, hitSeconds, hitSize, hitMirrorX, hitEffect, hitReactionProgress) == true;
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        if (pointerPressed) PointerMoved?.Invoke(PointToScreen(e.Location));
+        else UpdateBodyHover(HitSprite(PointToScreen(e.Location)));
+    }
+
+    private void UpdateBodyHover(bool hovered)
+    {
+        if (bodyHovered == hovered) return;
+        bodyHovered = hovered;
+        BodyHoverChanged?.Invoke(hovered);
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        base.OnMouseLeave(e);
+        if (!pointerPressed) UpdateBodyHover(false);
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        if (e.Button != MouseButtons.Left || !pointerPressed) return;
+        var point = PointToScreen(e.Location);
+        pointerPressed = false;
+        captureTimer.Stop();
+        Capture = false;
+        PointerReleased?.Invoke(point);
+    }
+
+    protected override void OnMouseCaptureChanged(EventArgs e)
+    {
+        base.OnMouseCaptureChanged(e);
+        if (!Capture) CancelPointer();
+    }
+
+    internal void CancelPointer()
+    {
+        if (!pointerPressed) return;
+        pointerPressed = false;
+        captureTimer.Stop();
+        Capture = false;
+        PointerCanceled?.Invoke();
     }
 
     internal void ReleaseVisitSurface()
@@ -185,8 +264,16 @@ internal sealed class OutsideCharacterForm : Form
             throw new Win32Exception(Marshal.GetLastWin32Error());
     }
 
-    protected override void OnVisibleChanged(EventArgs e) { base.OnVisibleChanged(e); if (!Visible) ReleaseVisitSurface(); }
-    protected override void Dispose(bool disposing) { if (disposing) ReleaseVisitSurface(); base.Dispose(disposing); }
+    protected override void OnVisibleChanged(EventArgs e)
+    {
+        base.OnVisibleChanged(e);
+        if (!Visible) { UpdateBodyHover(false); CancelPointer(); ReleaseVisitSurface(); }
+    }
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) { CancelPointer(); captureTimer.Dispose(); ReleaseVisitSurface(); }
+        base.Dispose(disposing);
+    }
 
     private sealed class TemporaryDc(IntPtr dc, IntPtr bitmap, IntPtr previous) : IDisposable
     {
@@ -207,5 +294,6 @@ internal sealed class OutsideCharacterForm : Form
     [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr value);
     [DllImport("gdi32.dll")] private static extern bool DeleteDC(IntPtr dc);
     [DllImport("gdi32.dll")] private static extern bool GdiFlush();
+    [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int key);
     [DllImport("gdi32.dll", SetLastError = true)] private static extern IntPtr CreateDIBSection(IntPtr dc, ref BitmapInfo info, uint usage, out IntPtr bits, IntPtr section, uint offset);
 }

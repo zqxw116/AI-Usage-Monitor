@@ -12,6 +12,10 @@ internal sealed class MonitorSettings
     public bool GeminiEnabled { get; set; }
     public bool VisualEffects { get; set; } = true;
     public CharacterDisplay CharacterDisplay { get; set; } = CharacterDisplay.Inside;
+    public double CharacterTrackDistance { get; set; }
+    public float? CharacterDesktopX { get; set; }
+    public float? CharacterDesktopY { get; set; }
+    public bool CharacterFacingLeft { get; set; }
     internal bool IsEnabled(ServiceKind kind) => kind switch
     {
         ServiceKind.Codex => CodexEnabled,
@@ -31,7 +35,9 @@ internal sealed class MonitorSettings
         try
         {
             using var stream = File.OpenRead(path ?? FilePath);
-            return JsonSerializer.Deserialize<MonitorSettings>(stream) ?? new();
+            var settings = JsonSerializer.Deserialize<MonitorSettings>(stream) ?? new();
+            if (settings.CharacterDisplay == CharacterDisplay.Both) settings.CharacterDisplay = CharacterDisplay.Inside;
+            return settings;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException) { return new(); }
     }

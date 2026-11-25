@@ -28,6 +28,7 @@ internal sealed class OrangeWalker : IDisposable
     internal int FrameCount => frames.Length;
     internal int CycleMilliseconds => frameEnds[^1];
     internal RectangleF Face { get; }
+    internal RectangleF NormalizedBodyBounds { get; }
 
     public OrangeWalker(CharacterChoice? character = null, float size = 22)
     {
@@ -45,6 +46,7 @@ internal sealed class OrangeWalker : IDisposable
         var delayBytes = animated && gif.PropertyIdList.Contains(0x5100) ? gif.GetPropertyItem(0x5100)!.Value : null;
         frameEnds = new int[count];
         Rectangle crop = Rectangle.Empty;
+        Rectangle bodyCrop = Rectangle.Empty;
         for (int i = 0; i < count; i++)
         {
             if (animated) gif.SelectActiveFrame(FrameDimension.Time, i);
@@ -60,6 +62,11 @@ internal sealed class OrangeWalker : IDisposable
             for (int x = 0; x < frameWidth; x++)
             {
                 int alpha = (pixels[y * (data.Stride / 4) + x] >> 24) & 0xff;
+                if (alpha >= 32)
+                {
+                    var bodyPixel = new Rectangle(x, y, 1, 1);
+                    bodyCrop = bodyCrop.IsEmpty ? bodyPixel : Rectangle.Union(bodyCrop, bodyPixel);
+                }
                 // 생성 프레임의 거의 투명한 외곽 픽셀이 표시 영역을 불필요하게 넓히지 않게 합니다.
                 if (alpha < (sheet ? 32 : 1)) continue;
                 var pixel = new Rectangle(x, y, 1, 1);
@@ -69,6 +76,12 @@ internal sealed class OrangeWalker : IDisposable
             frameEnds[i] = (i == 0 ? 0 : frameEnds[i - 1]) + delay;
         }
         frames = new Bitmap[count];
+        int frameSide = Math.Max(crop.Width, crop.Height);
+        var body = new RectangleF((bodyCrop.Left - crop.Left + (frameSide - crop.Width) / 2) / (float)frameSide,
+            (bodyCrop.Top - crop.Top + frameSide - crop.Height) / (float)frameSide,
+            bodyCrop.Width / (float)frameSide, bodyCrop.Height / (float)frameSide);
+        if (character.Flip) body.X = 1 - body.Right;
+        NormalizedBodyBounds = body;
         for (int i = 0; i < count; i++)
         {
             // 모든 프레임에 공통 영역을 적용해 몸의 움직임을 유지하고 발이 테두리에 닿게 배치합니다.
@@ -194,27 +207,68 @@ internal sealed class OrangeWalker : IDisposable
         DrawSprite(graphics, pose.Center, pose.Angle, seconds, Height(canvas));
     }
 
-    internal void DrawSprite(Graphics graphics, PointF center, float angle, double seconds, float spriteHeight, bool smooth = false, bool mirrorX = false)
+    internal void DrawSprite(Graphics graphics, PointF center, float angle, double seconds, float spriteHeight, bool smooth = false, bool mirrorX = false,
+        CharacterEffect effect = CharacterEffect.None, float reactionProgress = .25f, RectangleF? alertClip = null)
     {
         float spriteWidth = spriteHeight * frames[0].Width / frames[0].Height;
         var saved = graphics.Save();
         graphics.TranslateTransform(center.X, center.Y);
         graphics.RotateTransform(angle);
+        if (effect == CharacterEffect.Startled)
+        {
+            float stretch = CharacterVisual.Stretch(effect, reactionProgress);
+            graphics.TranslateTransform(0, (1 - stretch) * spriteHeight / 2);
+            graphics.ScaleTransform(1, stretch);
+        }
         if (mirrorX) graphics.ScaleTransform(-1, 1);
         graphics.InterpolationMode = smooth ? InterpolationMode.HighQualityBilinear : InterpolationMode.NearestNeighbor;
         graphics.PixelOffsetMode = smooth ? PixelOffsetMode.HighQuality : PixelOffsetMode.Half;
         graphics.DrawImage(frames[FrameAt(seconds)], new RectangleF(-spriteWidth / 2, -spriteHeight / 2, spriteWidth, spriteHeight));
         graphics.Restore(saved);
+        if (effect == CharacterEffect.Arrived)
+        {
+            var note = CharacterVisual.NoteBounds(CharacterVisual.SpriteBounds(center, spriteHeight, angle, effect), spriteHeight, reactionProgress, alertClip);
+            using var shape = new GraphicsPath(FillMode.Winding);
+            shape.AddEllipse(note.Left, note.Top + note.Height * .72f, note.Width * .56f, note.Height * .27f);
+            shape.AddRectangle(new RectangleF(note.Left + note.Width * .39f, note.Top, note.Width * .16f, note.Height * .84f));
+            shape.StartFigure();
+            shape.AddBezier(note.Left + note.Width * .48f, note.Top, note.Right + note.Width * .12f, note.Top + note.Height * .12f,
+                note.Right, note.Top + note.Height * .37f, note.Left + note.Width * .62f, note.Top + note.Height * .49f);
+            shape.AddBezier(note.Left + note.Width * .62f, note.Top + note.Height * .49f, note.Left + note.Width * .94f, note.Top + note.Height * .29f,
+                note.Left + note.Width * .65f, note.Top + note.Height * .21f, note.Left + note.Width * .48f, note.Top + note.Height * .19f);
+            shape.CloseFigure();
+            var noteState = graphics.Save();
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using var outline = new Pen(Color.FromArgb(28, 39, 42), 2) { LineJoin = LineJoin.Round };
+            using var ink = new SolidBrush(Color.FromArgb(113, 240, 192));
+            graphics.DrawPath(outline, shape);
+            graphics.FillPath(ink, shape);
+            graphics.Restore(noteState);
+        }
+        else if (effect == CharacterEffect.Startled)
+        {
+            var alert = CharacterVisual.AlertBounds(CharacterVisual.SpriteBounds(center, spriteHeight, angle, effect, reactionProgress), spriteHeight, alertClip);
+            using var outline = new SolidBrush(Color.FromArgb(32, 26, 18));
+            using var ink = new SolidBrush(Color.FromArgb(255, 222, 115));
+            graphics.FillRectangle(outline, alert.X - 1, alert.Y - 1, alert.Width + 2, alert.Height * .60f + 2);
+            graphics.FillRectangle(ink, alert.X, alert.Y, alert.Width, alert.Height * .60f);
+            graphics.FillRectangle(outline, alert.X - 1, alert.Bottom - alert.Width - 1, alert.Width + 2, alert.Width + 2);
+            graphics.FillRectangle(ink, alert.X, alert.Bottom - alert.Width, alert.Width, alert.Width);
+        }
     }
 
-    internal bool HitTestSprite(PointF point, PointF center, float angle, double seconds, float size, bool mirrorX = false)
+    internal bool HitTestSprite(PointF point, PointF center, float angle, double seconds, float size, bool mirrorX = false,
+        CharacterEffect effect = CharacterEffect.None, float reactionProgress = .25f)
     {
         double radians = angle * Math.PI / 180, dx = point.X - center.X, dy = point.Y - center.Y;
         var frame = frames[FrameAt(seconds)];
         double localX = dx * Math.Cos(radians) + dy * Math.Sin(radians);
         if (mirrorX) localX = -localX;
         int x = (int)Math.Floor((localX / size + .5) * frame.Width);
-        int y = (int)Math.Floor(((-dx * Math.Sin(radians) + dy * Math.Cos(radians)) / size + .5) * frame.Height);
+        double localY = -dx * Math.Sin(radians) + dy * Math.Cos(radians);
+        float stretch = CharacterVisual.Stretch(effect, reactionProgress);
+        localY = (localY - (1 - stretch) * size / 2) / stretch;
+        int y = (int)Math.Floor((localY / size + .5) * frame.Height);
         return x >= 0 && x < frame.Width && y >= 0 && y < frame.Height && frame.GetPixel(x, y).A >= 32;
     }
 
