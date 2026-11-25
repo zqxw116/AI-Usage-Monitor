@@ -6,17 +6,20 @@ using System.Runtime.InteropServices;
 namespace UsageMonitor;
 
 internal readonly record struct OrangePose(PointF Center, float Angle, RectangleF Bounds);
-internal sealed record CharacterChoice(string Name, string Resource, bool Flip = false, int Columns = 1, int Rows = 1, int FrameDelay = 100, bool RemoveBackground = false);
+internal sealed record CharacterChoice(string Name, string Resource, bool Flip = false, int Columns = 1, int Rows = 1, int FrameDelay = 100, bool RemoveBackground = false)
+{
+    internal RectangleF Face { get; init; } = new(.29f, .17f, .57f, .40f);
+}
 
 internal sealed class OrangeWalker : IDisposable
 {
     internal static readonly CharacterChoice[] Characters =
     {
         new("통통한 아기 펭귄 · 뒤뚱걷기", "ChubbyBabyPenguin.gif", RemoveBackground: true),
-        new("오리 · 걷기", "DuckWalkSheet.png", true, 4, 2),
-        new("아기 펭귄 · 원본", "BabyPenguin.gif", RemoveBackground: true),
-        new("오징어 모자 펭귄 · 원본", "SquidHatPenguin.gif", RemoveBackground: true),
-        new("두 고양이 · 걷기", "WalkingCats.gif")
+        new("오리 · 걷기", "DuckWalkSheet.png", true, 4, 2) { Face = new(.47f, .05f, .49f, .40f) },
+        new("아기 펭귄 · 원본", "BabyPenguin.gif", RemoveBackground: true) { Face = new(.35f, .35f, .43f, .30f) },
+        new("오징어 모자 펭귄 · 원본", "SquidHatPenguin.gif", RemoveBackground: true) { Face = new(.52f, .29f, .32f, .36f) },
+        new("두 고양이 · 걷기", "WalkingCats.gif") { Face = new(.78f, .34f, .20f, .30f) }
     };
     private readonly Bitmap[] frames;
     private readonly int[] frameEnds;
@@ -24,10 +27,12 @@ internal sealed class OrangeWalker : IDisposable
     internal float PreferredSize => height;
     internal int FrameCount => frames.Length;
     internal int CycleMilliseconds => frameEnds[^1];
+    internal RectangleF Face { get; }
 
     public OrangeWalker(CharacterChoice? character = null, float size = 22)
     {
         character ??= Characters[0];
+        Face = character.Face;
         height = size;
         using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(character.Resource)!;
         using var gif = Image.FromStream(stream);
@@ -136,17 +141,17 @@ internal sealed class OrangeWalker : IDisposable
 
     private float TrackInset(Size canvas) => Math.Min(Height(canvas) / 2 + 2, Math.Min(canvas.Width, canvas.Height) / 2f - 2);
 
-    internal double Perimeter(Size canvas)
+    internal double Perimeter(Size canvas, bool outside = false)
     {
-        double inset = TrackInset(canvas);
+        double inset = outside ? -Height(canvas) / 2 : TrackInset(canvas);
         return 2 * (canvas.Width + canvas.Height - 4 * inset);
     }
 
-    internal OrangePose PoseAt(double distance, Size canvas)
+    internal OrangePose PoseAt(double distance, Size canvas, bool outside = false)
     {
         float spriteHeight = Height(canvas);
         float spriteWidth = spriteHeight * frames[0].Width / frames[0].Height;
-        float inset = TrackInset(canvas);
+        float inset = outside ? -spriteHeight / 2 : TrackInset(canvas);
         float horizontal = canvas.Width - inset * 2, vertical = canvas.Height - inset * 2;
         double length = 2 * (horizontal + vertical);
         float offset = (float)((distance % length + length) % length);
@@ -174,21 +179,43 @@ internal sealed class OrangeWalker : IDisposable
         }
         float width = angle is -90 or -270 ? spriteHeight : spriteWidth;
         float tall = angle is -90 or -270 ? spriteWidth : spriteHeight;
+        if (outside)
+        {
+            // 외부에서는 위→오른쪽→아래→왼쪽으로 돌며 발이 창을 향합니다.
+            center.Y = canvas.Height - center.Y;
+            angle = -angle;
+        }
         return new OrangePose(center, angle, new RectangleF(center.X - width / 2, center.Y - tall / 2, width, tall));
     }
 
     internal void Draw(Graphics graphics, Size canvas, double seconds, double distance)
     {
         var pose = PoseAt(distance, canvas);
-        float spriteHeight = Height(canvas);
+        DrawSprite(graphics, pose.Center, pose.Angle, seconds, Height(canvas));
+    }
+
+    internal void DrawSprite(Graphics graphics, PointF center, float angle, double seconds, float spriteHeight, bool smooth = false, bool mirrorX = false)
+    {
         float spriteWidth = spriteHeight * frames[0].Width / frames[0].Height;
         var saved = graphics.Save();
-        graphics.TranslateTransform(pose.Center.X, pose.Center.Y);
-        graphics.RotateTransform(pose.Angle);
-        graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
-        graphics.PixelOffsetMode = PixelOffsetMode.Half;
+        graphics.TranslateTransform(center.X, center.Y);
+        graphics.RotateTransform(angle);
+        if (mirrorX) graphics.ScaleTransform(-1, 1);
+        graphics.InterpolationMode = smooth ? InterpolationMode.HighQualityBilinear : InterpolationMode.NearestNeighbor;
+        graphics.PixelOffsetMode = smooth ? PixelOffsetMode.HighQuality : PixelOffsetMode.Half;
         graphics.DrawImage(frames[FrameAt(seconds)], new RectangleF(-spriteWidth / 2, -spriteHeight / 2, spriteWidth, spriteHeight));
         graphics.Restore(saved);
+    }
+
+    internal bool HitTestSprite(PointF point, PointF center, float angle, double seconds, float size, bool mirrorX = false)
+    {
+        double radians = angle * Math.PI / 180, dx = point.X - center.X, dy = point.Y - center.Y;
+        var frame = frames[FrameAt(seconds)];
+        double localX = dx * Math.Cos(radians) + dy * Math.Sin(radians);
+        if (mirrorX) localX = -localX;
+        int x = (int)Math.Floor((localX / size + .5) * frame.Width);
+        int y = (int)Math.Floor(((-dx * Math.Sin(radians) + dy * Math.Cos(radians)) / size + .5) * frame.Height);
+        return x >= 0 && x < frame.Width && y >= 0 && y < frame.Height && frame.GetPixel(x, y).A >= 32;
     }
 
     public void Dispose()

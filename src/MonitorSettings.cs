@@ -2,12 +2,16 @@ using System.Text.Json;
 
 namespace UsageMonitor;
 
+[Flags]
+internal enum CharacterDisplay { None = 0, Inside = 1, Outside = 2, Both = Inside | Outside, FreeRoam = 4, FollowMouse = 8 }
+
 internal sealed class MonitorSettings
 {
     public bool CodexEnabled { get; set; } = true;
     public bool ClaudeEnabled { get; set; } = true;
     public bool GeminiEnabled { get; set; }
     public bool VisualEffects { get; set; } = true;
+    public CharacterDisplay CharacterDisplay { get; set; } = CharacterDisplay.Inside;
     internal bool IsEnabled(ServiceKind kind) => kind switch
     {
         ServiceKind.Codex => CodexEnabled,

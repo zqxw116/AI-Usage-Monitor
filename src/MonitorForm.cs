@@ -30,6 +30,14 @@ internal sealed class MonitorForm : Form
     private readonly System.Windows.Forms.Timer timer = new() { Interval = 1000 };
     private readonly System.Windows.Forms.Timer orangeTimer = new() { Interval = 33 };
     private OrangeWalker orange = new(OrangeWalker.Characters[0]);
+    private OutsideCharacterForm? outsideCharacter;
+    private double? visitStarted;
+    private bool visitFromOutside;
+    private readonly CharacterRoaming roaming = new();
+    private bool roamingInitialized;
+    private double roamingTime;
+    private bool DesktopCharacter => settings.CharacterDisplay is CharacterDisplay.FreeRoam or CharacterDisplay.FollowMouse;
+    internal bool CharacterVisitActive => visitStarted is not null;
     private readonly ContextMenuStrip characterMenu = new() { ImageScalingSize = new Size(24, 24) };
     private readonly List<Image> characterIcons = new();
     private int selectedCharacter;
@@ -110,6 +118,7 @@ internal sealed class MonitorForm : Form
     {
         sources = gemini is null ? new[] { codex, claude } : new[] { codex, claude, gemini };
         this.settings = settings ?? (live ? MonitorSettings.Load() : new MonitorSettings());
+        if (!Enum.IsDefined(this.settings.CharacterDisplay)) this.settings.CharacterDisplay = CharacterDisplay.Inside;
         this.noticeDirectory = noticeDirectory;
         updateNotice = notice ?? (live ? UpdateNoticeStore.LoadForCurrentVersion(AppUpdater.CurrentVersion, noticeDirectory) : null);
         foreach (var source in sources) source.SetEnabled(this.settings.IsEnabled(source.Kind));
@@ -139,20 +148,26 @@ internal sealed class MonitorForm : Form
             item.Click += (_, _) => SelectCharacter(selection);
             characterMenu.Items.Add(item);
         }
+        characterMenu.Items.Add(new ToolStripSeparator());
+        characterMenu.Items.Add(CreateCharacterDisplayMenu());
+        LocationChanged += (_, _) => UpdateOutsideCharacter();
+        ClientSizeChanged += (_, _) => UpdateOutsideCharacter();
+        VisibleChanged += (_, _) => UpdateOutsideCharacter();
         if (live) CreateTray();
         orangeTimer.Tick += (_, _) =>
         {
 
             var before = orange.PoseAt(orangeDistance, DesignSize).Bounds;
             double now = orangeClock.Elapsed.TotalSeconds;
-            orangeDistance += (now - orangeTime) * 40;
+            if (!CharacterVisitActive) orangeDistance += (now - orangeTime) * 40;
             orangeTime = now;
             var after = orange.PoseAt(orangeDistance, DesignSize).Bounds;
             var damage = RectangleF.Union(before, after);
             float sx = ClientSize.Width / (float)DesignSize.Width, sy = ClientSize.Height / (float)DesignSize.Height;
             var region = Rectangle.Ceiling(new RectangleF(damage.X * sx, damage.Y * sy, damage.Width * sx, damage.Height * sy));
             region.Inflate(2, 2);
-            Invalidate(region);
+            if (this.settings.CharacterDisplay.HasFlag(CharacterDisplay.Inside)) Invalidate(region);
+            UpdateOutsideCharacter();
             if (BlinkingNoticeButton is var noticeButton && noticeButton >= 0)
             {
                 var box = ButtonBounds(noticeButton);
@@ -230,6 +245,7 @@ internal sealed class MonitorForm : Form
         displayedDesign = size;
         SetBounds(Left, Top, (int)Math.Round(size.Width * scale), (int)Math.Round(size.Height * scale));
         orangeDistance = fraction * orange.Perimeter(size);
+        UpdateOutsideCharacter();
         hoverPart = -1;
         Invalidate();
     }
@@ -239,6 +255,7 @@ internal sealed class MonitorForm : Form
         double fraction = orangeDistance / orange.Perimeter(DesignSize);
         orange.ChangeSize(delta, DesignSize);
         orangeDistance = fraction * orange.Perimeter(DesignSize);
+        UpdateOutsideCharacter();
         Invalidate();
     }
 
@@ -251,9 +268,127 @@ internal sealed class MonitorForm : Form
         orange = replacement;
         selectedCharacter = index;
         orangeDistance = fraction * orange.Perimeter(DesignSize);
-        for (int i = 0; i < characterMenu.Items.Count; i++) ((ToolStripMenuItem)characterMenu.Items[i]).Checked = i == index;
+        for (int i = 0; i < OrangeWalker.Characters.Length; i++) ((ToolStripMenuItem)characterMenu.Items[i]).Checked = i == index;
         if (trayIcon is not null) trayIcon.Text = "AI 사용량 · " + OrangeWalker.Characters[index].Name;
+        UpdateOutsideCharacter();
+        BeginCharacterVisit();
         Invalidate();
+    }
+
+    private ToolStripMenuItem CreateCharacterDisplayMenu()
+    {
+        var menu = new ToolStripMenuItem("캐릭터 표시 위치");
+        foreach (var (mode, name) in new[] { (CharacterDisplay.None, "끔"), (CharacterDisplay.Inside, "내부만"),
+            (CharacterDisplay.Outside, "외부만"), (CharacterDisplay.Both, "내부 + 외부"),
+            (CharacterDisplay.FreeRoam, "자유 이동"), (CharacterDisplay.FollowMouse, "마우스 따라가기") })
+        {
+            var item = new ToolStripMenuItem(name) { Tag = mode };
+            item.Click += (_, _) => SetCharacterDisplay(mode);
+            menu.DropDownItems.Add(item);
+        }
+        menu.DropDownOpening += (_, _) =>
+        {
+            foreach (ToolStripMenuItem item in menu.DropDownItems)
+                item.Checked = (CharacterDisplay)item.Tag! == settings.CharacterDisplay;
+        };
+        return menu;
+    }
+
+    internal void SetCharacterDisplay(CharacterDisplay mode)
+    {
+        if (!Enum.IsDefined(mode)) return;
+        visitStarted = null;
+        outsideCharacter?.ReleaseVisitSurface();
+        roamingInitialized = false;
+        settings.CharacterDisplay = mode;
+        UpdateOutsideCharacter();
+        Invalidate();
+        try { if (liveAnimation) settings.Save(); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        { MessageBox.Show(this, "캐릭터 표시 설정을 저장하지 못했습니다."); }
+    }
+
+    private void UpdateOutsideCharacter()
+    {
+        if (Disposing || IsDisposed) return;
+        if (visitStarted is { } started && orangeTime - started >= CharacterVisit.Duration)
+        {
+            visitStarted = null;
+            outsideCharacter?.ReleaseVisitSurface();
+            roamingTime = orangeTime;
+            Invalidate();
+        }
+        if (!Visible || (!CharacterVisitActive && !DesktopCharacter && !settings.CharacterDisplay.HasFlag(CharacterDisplay.Outside)))
+        {
+            outsideCharacter?.Hide();
+            return;
+        }
+        if (outsideCharacter is null)
+        {
+            outsideCharacter = new OutsideCharacterForm();
+            outsideCharacter.CharacterClicked += () => BeginCharacterVisit(fromOutside: true);
+        }
+        outsideCharacter.ClickThrough = settings.CharacterDisplay == CharacterDisplay.FollowMouse;
+        if (DesktopCharacter && !roamingInitialized)
+        {
+            var start = PointToScreen(new Point(ClientSize.Width / 2, 0));
+            roaming.Reset(start);
+            roaming.Step(.001, Screen.FromControl(this).WorkingArea, orange.Height(DesignSize) * ClientSize.Width / DesignSize.Width);
+            roamingTime = orangeTime;
+            roamingInitialized = true;
+        }
+        if (CharacterVisitActive)
+        {
+            var design = DesignSize;
+            float scale = ClientSize.Width / (float)design.Width;
+            double fraction = orangeDistance / orange.Perimeter(design);
+            var pose = orange.PoseAt(visitFromOutside ? fraction * orange.Perimeter(design, true) : orangeDistance, design, visitFromOutside);
+            var origin = PointToScreen(Point.Empty);
+            var center = new PointF(origin.X + pose.Center.X * scale, origin.Y + pose.Center.Y * scale);
+            float spriteSize = orange.Height(design) * scale;
+            if (DesktopCharacter)
+            {
+                center = roaming.Position;
+                pose = pose with { Angle = 0 };
+                roamingTime = orangeTime;
+            }
+            var area = DesktopCharacter ? Screen.FromPoint(Point.Round(center)).WorkingArea : Screen.FromControl(this).WorkingArea;
+            var visit = CharacterVisit.PoseAt(orangeTime - visitStarted!.Value, center, spriteSize, pose.Angle, area, orange.Face);
+            outsideCharacter.UpdatePose(this, orange, visit.Center, visit.Size, visit.Angle, visitStarted.Value, area, smooth: true, visiting: true,
+                mirrorX: DesktopCharacter && roaming.FacingLeft);
+        }
+        else if (DesktopCharacter)
+        {
+            PointF? pointer = settings.CharacterDisplay == CharacterDisplay.FollowMouse ? Cursor.Position : null;
+            var area = pointer is not null ? DisplayLimits.Envelope(WorkAreas) : Screen.FromControl(this).WorkingArea;
+            float spriteSize = orange.Height(DesignSize) * ClientSize.Width / DesignSize.Width;
+            Rectangle? pointerArea = pointer is { } cursor ? Screen.FromPoint(Point.Round(cursor)).WorkingArea : null;
+            var center = roaming.Step(orangeTime - roamingTime, area, spriteSize, pointer, pointerArea);
+            roamingTime = orangeTime;
+            outsideCharacter.UpdatePose(this, orange, center, spriteSize, 0, orangeTime, SystemInformation.VirtualScreen, smooth: true,
+                mirrorX: roaming.FacingLeft);
+        }
+        else outsideCharacter.UpdateCharacter(this, orange, DesignSize, orangeTime, orangeDistance);
+    }
+
+    internal bool BeginCharacterVisit(bool fromOutside = false)
+    {
+        if (!Visible || settings.CharacterDisplay == CharacterDisplay.None || CharacterVisitActive) return false;
+        if (fromOutside && settings.CharacterDisplay == CharacterDisplay.FollowMouse) return false;
+        visitStarted = orangeTime;
+        visitFromOutside = fromOutside || settings.CharacterDisplay == CharacterDisplay.Outside;
+        UpdateOutsideCharacter();
+        Invalidate();
+        return true;
+    }
+
+    private bool HitInsideCharacter(PointF point)
+    {
+        if (CharacterVisitActive || !settings.CharacterDisplay.HasFlag(CharacterDisplay.Inside)) return false;
+        for (int button = toolsExpanded ? 0 : 8; button < 9; button++)
+            if (ButtonBounds(button).Contains(point)) return false;
+        var pose = orange.PoseAt(orangeDistance, DesignSize);
+        return orange.HitTestSprite(point, pose.Center, pose.Angle, orangeTime, orange.Height(DesignSize));
     }
 
     internal void CreateTray()
@@ -271,6 +406,7 @@ internal sealed class MonitorForm : Form
             characters.DropDownItems.Add(OrangeWalker.Characters[i].Name, null, (_, _) => SelectCharacter(selection));
         }
         trayMenu.Items.Add(characters);
+        trayMenu.Items.Add(CreateCharacterDisplayMenu());
         var effects = new ToolStripMenuItem("아이콘·바 애니메이션") { Checked = settings.VisualEffects };
         effects.Click += (_, _) =>
         {
@@ -403,6 +539,8 @@ internal sealed class MonitorForm : Form
 
     internal void HideToTray()
     {
+        visitStarted = null;
+        outsideCharacter?.ReleaseVisitSurface();
         orangeTimer.Stop();
         orangeClock.Stop();
         Hide();
@@ -421,6 +559,7 @@ internal sealed class MonitorForm : Form
     {
         orangeDistance = fraction * orange.Perimeter(DesignSize);
         orangeTime = seconds;
+        UpdateOutsideCharacter();
         Invalidate();
     }
 
@@ -435,6 +574,7 @@ internal sealed class MonitorForm : Form
     internal void TogglePin()
     {
         TopMost = !TopMost;
+        UpdateOutsideCharacter();
         hoverPart = -1;
         Invalidate();
     }
@@ -550,7 +690,7 @@ internal sealed class MonitorForm : Form
         }
         if (EnabledCount == 0)
             DrawText(g, "메뉴에서 서비스를 선택하세요", valueFont, LabelColor, new RectangleF(10, 10, ServiceAreaWidth - 20, 30), true);
-        orange.Draw(g, size, orangeTime, orangeDistance);
+        if (!CharacterVisitActive && settings.CharacterDisplay.HasFlag(CharacterDisplay.Inside)) orange.Draw(g, size, orangeTime, orangeDistance);
         if (toolsExpanded)
         {
             DrawButton(g, 0, "", TopMost);
@@ -880,6 +1020,13 @@ internal sealed class MonitorForm : Form
     {
         base.OnMouseMove(e);
         var point = LogicalPoint(e.Location);
+        if (HitInsideCharacter(point))
+        {
+            Cursor = Cursors.Hand;
+            hoverPart = -20;
+            tooltip.SetToolTip(this, "캐릭터 클릭: 가까이 보기");
+            return;
+        }
         int button = -1;
         for (int i = toolsExpanded ? 0 : 8; i < 9; i++) if (ButtonBounds(i).Contains(point)) { button = i; break; }
         var source = Panels().FirstOrDefault(p => p.Bounds.Contains((int)point.X, (int)point.Y)).Source;
@@ -903,6 +1050,7 @@ internal sealed class MonitorForm : Form
         if (e.Button == MouseButtons.Right) { ShowConnections(); return; }
         if (e.Button != MouseButtons.Left) return;
         var point = LogicalPoint(e.Location);
+        if (HitInsideCharacter(point)) { BeginCharacterVisit(); return; }
         for (int i = toolsExpanded ? 0 : 8; i < 9; i++)
         {
             if (!ButtonBounds(i).Contains(point)) continue;
@@ -928,6 +1076,7 @@ internal sealed class MonitorForm : Form
             if (!IsDisposed) { updateLifetime.Cancel(); updateLifetime.Dispose(); }
             timer.Dispose(); tooltip.Dispose();
             connections?.Close();
+            outsideCharacter?.Dispose();
             orangeTimer.Dispose(); orangeClock.Stop(); orange.Dispose();
             trayIcon?.Dispose(); trayMenu?.Dispose(); characterMenu.Dispose();
             foreach (var icon in characterIcons) icon.Dispose();

@@ -13,6 +13,26 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.SequenceEqual(new[] { "--character-rendering" }))
+        {
+            CharacterRenderingChecks.Run(Check);
+            return failed == 0 ? 0 : 1;
+        }
+        if (args.Length == 2 && args[0] == "--characters-preview")
+        {
+            Directory.CreateDirectory(args[1]);
+            CharacterDisplayChecks.Run(args[1], Check, capture: true);
+            CharacterVisitChecks.RenderPreview(args[1]);
+            return failed == 0 ? 0 : 1;
+        }
+        if (args.SequenceEqual(new[] { "--characters" }))
+        {
+            string path = Path.Combine(Path.GetTempPath(), "AIUsageCharacters-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(path);
+            try { CharacterDisplayChecks.Run(path, Check); CharacterVisitChecks.Run(Check); CharacterRoamingChecks.Run(Check); CharacterRenderingChecks.Run(Check); }
+            finally { Directory.Delete(path, true); }
+            return failed == 0 ? 0 : 1;
+        }
         if (args.Length == 2 && args[0] == "--info-preview")
         {
             Application.EnableVisualStyles();
@@ -64,6 +84,10 @@ internal static class Program
             InfoViewChecks.Run(directory, Check);
             UpdateNoticeViewChecks.Run(directory, Check);
             ResponsivenessChecks.Run(Check);
+            CharacterDisplayChecks.Run(directory, Check);
+            CharacterVisitChecks.Run(Check);
+            CharacterRoamingChecks.Run(Check);
+            CharacterRenderingChecks.Run(Check);
         }
         finally { Directory.Delete(directory, true); }
         Console.WriteLine($"RESULT failed={failed}");
