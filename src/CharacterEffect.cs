@@ -36,11 +36,11 @@ internal static class CharacterVisual
         return alert;
     }
 
-    internal static RectangleF Bounds(PointF center, float size, float angle, CharacterEffect effect, float reactionProgress = .25f)
+    internal static RectangleF Bounds(PointF center, float size, float angle, CharacterEffect effect, float reactionProgress = .25f, RectangleF? alertClip = null)
     {
         var sprite = SpriteBounds(center, size, angle, effect, reactionProgress);
         if (effect == CharacterEffect.None) return sprite;
-        var alert = effect == CharacterEffect.Arrived ? NoteBounds(sprite, size, reactionProgress) : AlertBounds(sprite, size);
+        var alert = effect == CharacterEffect.Arrived ? NoteBounds(sprite, size, reactionProgress, alertClip) : AlertBounds(sprite, size, alertClip);
         alert.Inflate(1, 1);
         return RectangleF.Union(sprite, alert);
     }

@@ -74,7 +74,7 @@ internal static class CharacterPointerRegressionChecks
             check(Field<bool>("draggingCharacter") && form.Capture && Field<Point?>("characterPress") is not null,
                 "실제 WM_MOUSEMOVE로 창 경계를 넘어도 내부 드래그와 캡처 유지");
             Send(form, 0x202, far);
-            check(settings.CharacterDisplay == CharacterDisplay.FollowMouse && !form.Capture && Field<Point?>("characterPress") is null,
+            check(settings.CharacterDisplay == CharacterDisplay.FreeRoam && !form.Capture && Field<Point?>("characterPress") is null,
                 "실제 WM_LBUTTONUP 이후 먼 드롭 적용과 캡처 해제 순서 유지");
             Console.WriteLine("실제 내부 포인터 메시지: " + string.Join(",", trace.Messages.Select(message => message.ToString("X"))));
         }
@@ -121,8 +121,11 @@ internal static class CharacterPointerRegressionChecks
         }
         finally
         {
-            mouse_event(4, 0, 0, 0, UIntPtr.Zero);
-            Cursor.Position = savedCursor;
+            if (physicalInput)
+            {
+                mouse_event(4, 0, 0, 0, UIntPtr.Zero);
+                Cursor.Position = savedCursor;
+            }
         }
         form.ChangeOrangeSize(104 - (int)Field<OrangeWalker>("orange").PreferredSize);
         form.SetCharacterDisplay(CharacterDisplay.Inside);
@@ -162,14 +165,12 @@ internal static class CharacterPointerRegressionChecks
         form.PreviewOrange(.08, 0);
         Send(form, 0x200, InsidePixel());
         var distanceBefore = Field<double>("orangeDistance");
-        var clock = Field<System.Diagnostics.Stopwatch>("orangeClock");
-        clock.Start(); Thread.Sleep(40);
-        typeof(System.Windows.Forms.Timer).GetMethod("OnTick", Private)!.Invoke(Field<System.Windows.Forms.Timer>("orangeTimer"), new object[] { EventArgs.Empty });
-        clock.Stop();
+        typeof(MonitorForm).GetMethod("AdvanceCharacter", Private)!.Invoke(form, new object[] { .04, InsidePixel() });
         var currentEffect = (CharacterEffect)typeof(MonitorForm).GetProperty("CurrentCharacterEffect", Private)!.GetValue(form)!;
-        check(Field<double>("orangeDistance") != distanceBefore && Field<Point?>("characterPress") is null && currentEffect == CharacterEffect.Startled,
-            "hover 반응 동안 실제 애니메이션 Tick에서도 위치 이동을 멈추지 않음");
+        check(Field<double>("orangeDistance") == distanceBefore && Field<Point?>("characterPress") is null && currentEffect == CharacterEffect.Startled,
+            "hover 중에는 누르지 않아도 실제 애니메이션 Tick에서 위치를 정지");
         form.Close();
+        CharacterHoverChecks.Run(check);
     }
 
     private static void Pump()

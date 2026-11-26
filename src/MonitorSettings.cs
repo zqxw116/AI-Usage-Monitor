@@ -12,6 +12,7 @@ internal sealed class MonitorSettings
     public bool GeminiEnabled { get; set; }
     public bool VisualEffects { get; set; } = true;
     public CharacterDisplay CharacterDisplay { get; set; } = CharacterDisplay.Inside;
+    public CharacterDisplay CharacterDesktopMovement { get; set; } = CharacterDisplay.FreeRoam;
     public double CharacterTrackDistance { get; set; }
     public float? CharacterDesktopX { get; set; }
     public float? CharacterDesktopY { get; set; }
@@ -35,7 +36,14 @@ internal sealed class MonitorSettings
         try
         {
             using var stream = File.OpenRead(path ?? FilePath);
-            var settings = JsonSerializer.Deserialize<MonitorSettings>(stream) ?? new();
+            using var document = JsonDocument.Parse(stream);
+            if (document.RootElement.ValueKind != JsonValueKind.Object) return new();
+            var settings = document.RootElement.Deserialize<MonitorSettings>() ?? new();
+            if (!document.RootElement.TryGetProperty(nameof(CharacterDesktopMovement), out _))
+                settings.CharacterDesktopMovement = settings.CharacterDisplay == CharacterDisplay.FollowMouse
+                    ? CharacterDisplay.FollowMouse : CharacterDisplay.FreeRoam;
+            if (settings.CharacterDesktopMovement is not (CharacterDisplay.FreeRoam or CharacterDisplay.FollowMouse))
+                settings.CharacterDesktopMovement = CharacterDisplay.FreeRoam;
             if (settings.CharacterDisplay == CharacterDisplay.Both) settings.CharacterDisplay = CharacterDisplay.Inside;
             return settings;
         }

@@ -42,6 +42,8 @@ internal sealed class OutsideCharacterForm : Form
     internal event Action<bool>? BodyHoverChanged;
     internal bool IsPointerCaptured => pointerPressed;
     internal PointF DisplayedCenter => hitCenter;
+    internal bool ContainsBody(Point point) => Visible && !ClickThrough && Bounds.Contains(point) && HitSprite(point);
+    internal void RefreshBodyHover(Point point) => UpdateBodyHover(ContainsBody(point));
     protected override bool ShowWithoutActivation => true;
     protected override CreateParams CreateParams
     {
@@ -83,7 +85,7 @@ internal sealed class OutsideCharacterForm : Form
         var full = new Rectangle((int)Math.Round(center.X - side / 2f), (int)Math.Round(center.Y - side / 2f), side, side);
         if (effect != CharacterEffect.None)
         {
-            full = Rectangle.Ceiling(CharacterVisual.Bounds(center, spriteSize, angle, effect, reactionProgress));
+            full = Rectangle.Ceiling(CharacterVisual.Bounds(center, spriteSize, angle, effect, reactionProgress, clipping));
             full.Inflate(2, 2);
         }
         // 큰 캐릭터도 화면 밖 픽셀까지 할당하지 않습니다. 창의 크기 상한은 추가하지 않습니다.
@@ -112,7 +114,8 @@ internal sealed class OutsideCharacterForm : Form
                 graphics.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceOver;
                 graphics.SetClip(visibleBuffer);
                 var bufferCenter = new PointF(localCenter.X + visibleBuffer.X, localCenter.Y + visibleBuffer.Y);
-                walker.DrawSprite(graphics, bufferCenter, angle, seconds, spriteSize, smooth, mirrorX, effect, reactionProgress);
+                walker.DrawSprite(graphics, bufferCenter, angle, seconds, spriteSize, smooth, mirrorX, effect, reactionProgress,
+                    new RectangleF(PointF.Empty, clipping.Size));
                 visitDirty = visibleBuffer;
                 graphics.Flush(System.Drawing.Drawing2D.FlushIntention.Sync);
             }
@@ -125,7 +128,8 @@ internal sealed class OutsideCharacterForm : Form
             ReleaseVisitSurface();
             using var surface = new Bitmap(visible.Width, visible.Height, PixelFormat.Format32bppPArgb);
             using (var graphics = Graphics.FromImage(surface))
-                walker.DrawSprite(graphics, localCenter, angle, seconds, spriteSize, smooth, mirrorX, effect, reactionProgress);
+                walker.DrawSprite(graphics, localCenter, angle, seconds, spriteSize, smooth, mirrorX, effect, reactionProgress,
+                    new RectangleF(clipping.X - visible.X, clipping.Y - visible.Y, clipping.Width, clipping.Height));
             using var dcSurface = CreateTemporaryDc(surface);
             Present(surface.Size, visible.Location, dcSurface.Dc);
             UpdateBounds();
@@ -183,7 +187,7 @@ internal sealed class OutsideCharacterForm : Form
     protected override void OnMouseLeave(EventArgs e)
     {
         base.OnMouseLeave(e);
-        if (!pointerPressed) UpdateBodyHover(false);
+        if (!pointerPressed) RefreshBodyHover(Cursor.Position);
     }
 
     protected override void OnMouseUp(MouseEventArgs e)

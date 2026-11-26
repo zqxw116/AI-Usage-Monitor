@@ -17,6 +17,7 @@ internal sealed partial class MonitorForm
     private void BeginCharacterPress(Point screen, bool fromOutside)
     {
         if (CharacterVisitActive || characterPress is not null) return;
+        ClearCharacterHover();
         bool outer = fromOutside && !DesktopCharacter;
         var pose = AttachedCharacterPose(outer);
         float scale = ClientSize.Width / (float)DesignSize.Width;
@@ -86,9 +87,9 @@ internal sealed partial class MonitorForm
         }
         else
         {
-            settings.CharacterDisplay = CharacterDisplay.FollowMouse;
+            settings.CharacterDisplay = settings.CharacterDesktopMovement;
             roaming.Relocate(dragCenter, dragFacingLeft);
-            roaming.RequireFollowApproach();
+            if (settings.CharacterDisplay == CharacterDisplay.FollowMouse) roaming.RequireFollowApproach();
             roamingInitialized = true;
         }
         roamingTime = orangeTime;

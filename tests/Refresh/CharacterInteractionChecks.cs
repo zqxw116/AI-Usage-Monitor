@@ -82,6 +82,19 @@ internal static class CharacterInteractionChecks
             "구버전 내부+외부 설정은 다른 서비스 선택을 보존하고 내부만으로 이전");
         check(legacy.CharacterDesktopX is null && legacy.CharacterDesktopY is null && legacy.CharacterTrackDistance == 0,
             "이전 설정에 위치가 없으면 기본 배치를 유지");
+        check(legacy.CharacterDesktopMovement == CharacterDisplay.FreeRoam && new MonitorSettings().CharacterDesktopMovement == CharacterDisplay.FreeRoam,
+            "바탕 이동 방식이 없는 구버전 내부 설정과 새 설정은 자유 이동이 기본");
+        foreach (var mode in new[] { CharacterDisplay.FreeRoam, CharacterDisplay.FollowMouse })
+        {
+            File.WriteAllText(path, "{\"CharacterDisplay\":" + (int)mode + "}");
+            check(MonitorSettings.Load(path).CharacterDesktopMovement == mode, "구버전 명시 " + mode + " 선택은 바탕 이동 방식으로 이전");
+        }
+        File.WriteAllText(path, "{\"CharacterDisplay\":1,\"CharacterDesktopMovement\":8}");
+        check(MonitorSettings.Load(path).CharacterDesktopMovement == CharacterDisplay.FollowMouse,
+            "내부 표시로 저장되어도 별도 기억한 추적 방식 보존");
+        File.WriteAllText(path, "{\"CharacterDesktopMovement\":3}");
+        check(MonitorSettings.Load(path).CharacterDesktopMovement == CharacterDisplay.FreeRoam,
+            "유효하지 않은 바탕 이동 방식은 기본 자유 이동으로 복원");
         var saved = new MonitorSettings { CharacterDisplay = CharacterDisplay.FollowMouse, CharacterTrackDistance = .3215,
             CharacterDesktopX = -250.25f, CharacterDesktopY = 370.5f, CharacterFacingLeft = true };
         saved.Save(path);

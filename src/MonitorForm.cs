@@ -32,6 +32,7 @@ internal sealed partial class MonitorForm : Form
     private OrangeWalker orange = new(OrangeWalker.Characters[0]);
     private OutsideCharacterForm? outsideCharacter;
     private double? visitStarted;
+    private double visitAnimationTime;
     private bool visitFromOutside;
     private readonly CharacterRoaming roaming = new();
     private bool roamingInitialized;
@@ -90,7 +91,7 @@ internal sealed partial class MonitorForm : Form
     {
         get { return sources.Where(source => source.Enabled); }
     }
-    internal int OrangeFrame => orange.FrameAt(orangeTime);
+    internal int OrangeFrame => orange.FrameAt(characterAnimationTime);
     internal int OrangeAngle => (int)orange.PoseAt(orangeDistance, DesignSize).Angle;
     internal float OrangeHeight => orange.Height(DesignSize);
     internal int SelectedCharacter => selectedCharacter;
@@ -156,7 +157,7 @@ internal sealed partial class MonitorForm : Form
         characterMenu.Items.Add(CreateCharacterDisplayMenu());
         LocationChanged += (_, _) => UpdateOutsideCharacter();
         ClientSizeChanged += (_, _) => UpdateOutsideCharacter();
-        VisibleChanged += (_, _) => { if (!Visible) CancelCharacterPress(); UpdateOutsideCharacter(); };
+        VisibleChanged += (_, _) => { if (!Visible) { ClearCharacterHover(); CancelCharacterPress(); } UpdateOutsideCharacter(); };
         FormClosing += (_, _) => { CancelCharacterPress(); SaveCharacterPlacement(); };
         Deactivate += (_, _) => { if (characterPress is not null && !dragWasOutside && !updatingCharacterOverlay) CancelCharacterPress(); };
         if (live) CreateTray();
@@ -165,8 +166,7 @@ internal sealed partial class MonitorForm : Form
 
             var before = orange.PoseAt(orangeDistance, DesignSize).Bounds;
             double now = orangeClock.Elapsed.TotalSeconds;
-            if (!CharacterVisitActive && characterPress is null) orangeDistance += (now - orangeTime) * (trackReverse ? -40 : 40);
-            orangeTime = now;
+            AdvanceCharacter(now, Cursor.Position);
             var after = orange.PoseAt(orangeDistance, DesignSize).Bounds;
             var damage = RectangleF.Union(before, after);
             var reactionBounds = RectangleF.Empty;
@@ -183,7 +183,6 @@ internal sealed partial class MonitorForm : Form
             var region = Rectangle.Ceiling(new RectangleF(damage.X * sx, damage.Y * sy, damage.Width * sx, damage.Height * sy));
             region.Inflate(2, 2);
             if (this.settings.CharacterDisplay.HasFlag(CharacterDisplay.Inside)) Invalidate(region);
-            UpdateOutsideCharacter();
             if (BlinkingNoticeButton is var noticeButton && noticeButton >= 0)
             {
                 var box = ButtonBounds(noticeButton);
@@ -322,6 +321,7 @@ internal sealed partial class MonitorForm : Form
         outsideCharacter?.ReleaseVisitSurface();
         roamingInitialized = false;
         settings.CharacterDisplay = mode;
+        if (mode is CharacterDisplay.FreeRoam or CharacterDisplay.FollowMouse) settings.CharacterDesktopMovement = mode;
         UpdateOutsideCharacter();
         Invalidate();
         try { if (liveAnimation) settings.Save(); }
@@ -329,7 +329,7 @@ internal sealed partial class MonitorForm : Form
         { MessageBox.Show(this, "캐릭터 표시 설정을 저장하지 못했습니다."); }
     }
 
-    private void UpdateOutsideCharacter()
+    private void UpdateOutsideCharacter(Point? screenPointer = null)
     {
         if (Disposing || IsDisposed) return;
         if (visitStarted is { } started && orangeTime - started >= CharacterVisit.Duration)
@@ -388,18 +388,18 @@ internal sealed partial class MonitorForm : Form
             var area = Screen.FromPoint(Point.Round(center)).WorkingArea;
             var visit = CharacterVisit.PoseAt(orangeTime - visitStarted!.Value, center, spriteSize, pose.Angle, area, orange.Face,
                 mirrorX: DesktopCharacter ? roaming.FacingLeft : trackReverse);
-            outsideCharacter.UpdatePose(this, orange, visit.Center, visit.Size, visit.Angle, visitStarted.Value, area, smooth: true, visiting: true,
+            outsideCharacter.UpdatePose(this, orange, visit.Center, visit.Size, visit.Angle, visitAnimationTime, area, smooth: true, visiting: true,
                 mirrorX: DesktopCharacter ? roaming.FacingLeft : trackReverse);
         }
         else if (DesktopCharacter)
         {
-            PointF? pointer = settings.CharacterDisplay == CharacterDisplay.FollowMouse ? Cursor.Position : null;
+            PointF? pointer = settings.CharacterDisplay == CharacterDisplay.FollowMouse ? screenPointer ?? Cursor.Position : null;
             var area = pointer is not null && !roaming.Nearby ? DisplayLimits.Envelope(WorkAreas) : Screen.FromPoint(Point.Round(roaming.Position)).WorkingArea;
             float spriteSize = orange.Height(DesignSize) * ClientSize.Width / DesignSize.Width;
             Rectangle? pointerArea = pointer is { } cursor ? Screen.FromPoint(Point.Round(cursor)).WorkingArea : null;
-            var center = characterPress is null ? roaming.Step(orangeTime - roamingTime, area, spriteSize, pointer, pointerArea,
+            var center = characterPress is null && !CharacterHoverPaused ? roaming.Step(orangeTime - roamingTime, area, spriteSize, pointer, pointerArea,
                 orange.NormalizedBodyBounds) : roaming.Position;
-            if (CurrentCharacterEffect != CharacterEffect.None)
+            if (CurrentCharacterEffect != CharacterEffect.None && !CharacterHoverPaused)
             {
                 center = CharacterVisual.FitCenter(center, spriteSize, 0, CurrentCharacterEffect,
                     Screen.FromPoint(Point.Round(center)).WorkingArea, CurrentCharacterReactionProgress);
@@ -415,7 +415,7 @@ internal sealed partial class MonitorForm : Form
             var pose = AttachedCharacterPose(true);
             var origin = PointToScreen(Point.Empty);
             outsideCharacter.UpdatePose(this, orange, new PointF(origin.X + pose.Center.X * scale, origin.Y + pose.Center.Y * scale),
-                orange.Height(DesignSize) * scale, pose.Angle, orangeTime, SystemInformation.VirtualScreen, mirrorX: trackReverse,
+                orange.Height(DesignSize) * scale, pose.Angle, characterAnimationTime, SystemInformation.VirtualScreen, mirrorX: trackReverse,
                 effect: CurrentCharacterEffect, reactionProgress: CurrentCharacterReactionProgress);
         }
     }
@@ -423,6 +423,8 @@ internal sealed partial class MonitorForm : Form
     internal bool BeginCharacterVisit(bool fromOutside = false)
     {
         if (!Visible || settings.CharacterDisplay == CharacterDisplay.None || CharacterVisitActive) return false;
+        visitAnimationTime = DesktopCharacter ? roaming.AnimationSeconds : characterAnimationTime;
+        ClearCharacterHover();
         visitStarted = orangeTime;
         visitFromOutside = fromOutside || settings.CharacterDisplay == CharacterDisplay.Outside;
         UpdateOutsideCharacter();
@@ -436,7 +438,7 @@ internal sealed partial class MonitorForm : Form
         for (int button = toolsExpanded ? 0 : 8; button < 9; button++)
             if (ButtonBounds(button).Contains(point)) return false;
         var pose = orange.PoseAt(orangeDistance, DesignSize);
-        return orange.HitTestSprite(point, pose.Center, pose.Angle, orangeTime, orange.Height(DesignSize), mirrorX: trackReverse,
+        return orange.HitTestSprite(point, pose.Center, pose.Angle, characterAnimationTime, orange.Height(DesignSize), mirrorX: trackReverse,
             effect: CurrentCharacterEffect, reactionProgress: CurrentCharacterReactionProgress);
     }
 
@@ -608,6 +610,7 @@ internal sealed partial class MonitorForm : Form
     {
         orangeDistance = fraction * orange.Perimeter(DesignSize);
         orangeTime = seconds;
+        characterAnimationTime = seconds;
         UpdateOutsideCharacter();
         Invalidate();
     }
@@ -741,7 +744,7 @@ internal sealed partial class MonitorForm : Form
         if (!draggingCharacter && !CharacterVisitActive && settings.CharacterDisplay.HasFlag(CharacterDisplay.Inside))
         {
             var pose = orange.PoseAt(orangeDistance, size);
-            orange.DrawSprite(g, pose.Center, pose.Angle, orangeTime, orange.Height(size), mirrorX: trackReverse,
+            orange.DrawSprite(g, pose.Center, pose.Angle, characterAnimationTime, orange.Height(size), mirrorX: trackReverse,
                 effect: CurrentCharacterEffect, reactionProgress: CurrentCharacterReactionProgress,
                 alertClip: new RectangleF(PointF.Empty, size));
         }

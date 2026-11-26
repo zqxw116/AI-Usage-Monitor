@@ -59,13 +59,13 @@ internal static class CharacterDragChecks
         check(Field<bool>("draggingCharacter") && Field<PointF>("dragCenter") == expectedDrop && !form.CharacterVisitActive,
             "문턱을 넘으면 확대 없이 캐릭터만 포인터 위치로 즉시 이동");
         Invoke("EndCharacterPress", far);
-        check(settings.CharacterDisplay == CharacterDisplay.FollowMouse && settings.CharacterDesktopX == expectedDrop.X && settings.CharacterDesktopY == expectedDrop.Y,
-            "테두리에서 먼 드롭은 추적 모드와 드롭 좌표 저장");
+        check(settings.CharacterDisplay == CharacterDisplay.FreeRoam && settings.CharacterDesktopX == expectedDrop.X && settings.CharacterDesktopY == expectedDrop.Y,
+            "별도 이동 선택 전 바탕 드롭은 기본 자유 이동과 드롭 좌표 저장");
         var overlay = form.OwnedForms.OfType<OutsideCharacterForm>().Single();
         var roam = Field<CharacterRoaming>("roaming");
         Invoke("BeginCharacterPress", Point.Round(roam.Position), true);
         Invoke("EndCharacterPress", Point.Round(roam.Position));
-        check(form.CharacterVisitActive, "추적 모드 짧은 클릭도 확대 실행");
+        check(form.CharacterVisitActive, "바탕 자유 이동 모드 짧은 클릭도 확대 실행");
         form.PreviewOrange(.3, 3);
         Invoke("BeginCharacterPress", Point.Round(roam.Position), true);
         var target = new Point(form.Left + form.Width / 2, form.Top - (int)form.OrangeHeight / 2 - 4);
@@ -101,6 +101,44 @@ internal static class CharacterDragChecks
         Invoke("CancelCharacterPress");
         check(!Field<bool>("draggingCharacter") && settings.CharacterDisplay == CharacterDisplay.Outside && TrackCenter(true) == initial,
             "입력 취소는 모드와 원래 사각형 위치 복원");
+        foreach (var movement in new[] { CharacterDisplay.FreeRoam, CharacterDisplay.FollowMouse })
+        {
+            var menu = (ToolStripMenuItem)typeof(MonitorForm).GetMethod("CreateCharacterDisplayMenu", Private)!.Invoke(form, null)!;
+            menu.DropDownItems.OfType<ToolStripMenuItem>().Single(item => (CharacterDisplay)item.Tag! == movement).PerformClick();
+            check(settings.CharacterDesktopMovement == movement, movement + " 메뉴 명시 선택을 바탕 이동 방식으로 기억");
+            foreach (var attached in new[] { CharacterDisplay.Inside, CharacterDisplay.Outside })
+            {
+                Invoke("BeginCharacterPress", Point.Round(roam.Position), true);
+                var attachPoint = new Point(form.Left + form.Width / 2,
+                    attached == CharacterDisplay.Inside ? form.Bottom - 1 : form.Top - 2);
+                Invoke("EndCharacterPress", attachPoint);
+                check(settings.CharacterDisplay == attached && settings.CharacterDesktopMovement == movement,
+                    movement + "에서 " + attached + " 테두리에 스냅해도 바탕 이동 방식 보존");
+                initial = TrackCenter(attached == CharacterDisplay.Outside);
+                Invoke("BeginCharacterPress", initial, attached == CharacterDisplay.Outside);
+                Invoke("EndCharacterPress", far);
+                check(settings.CharacterDisplay == movement && settings.CharacterDesktopMovement == movement,
+                    movement + " 선택 뒤 " + attached + " 경유 바탕 드롭은 선택한 이동 방식 유지");
+                check((bool)typeof(CharacterRoaming).GetField("approachRequired", Private)!.GetValue(roam)! == (movement == CharacterDisplay.FollowMouse),
+                    movement + " 드롭에서는 추적 모드에만 재접근 잠금 적용");
+            }
+            form.SetCharacterDisplay(CharacterDisplay.Inside);
+            settings.Save(path);
+            var restartSettings = MonitorSettings.Load(path);
+            using var restartCodex = new UsageSource(false);
+            using var restartClaude = new UsageSource(true);
+            using var restarted = new MonitorForm(restartCodex, restartClaude, false, restartSettings);
+            restarted.Show();
+            restarted.SetCharacterDisplay(CharacterDisplay.Inside);
+            var start = restarted.PointToScreen(new Point(100, 25));
+            typeof(MonitorForm).GetMethod("BeginCharacterPress", Private)!.Invoke(restarted, new object[] { start, false });
+            typeof(MonitorForm).GetMethod("EndCharacterPress", Private)!.Invoke(restarted,
+                new object[] { new Point(restarted.Left + restarted.Width / 2, restarted.Bottom + 180) });
+            check(restartSettings.CharacterDisplay == movement && restartSettings.CharacterDesktopMovement == movement,
+                movement + " 저장·재시작 후 내부 경유 바탕 드롭도 기억한 방식 유지");
+            restarted.Close();
+            menu.Dispose();
+        }
         form.Close();
     }
 }
